@@ -342,8 +342,31 @@ class OpenAIService:
                 mcp_result = await archive_records(table_name, filters, user_id)
             elif tool_name == "delete_archived_records" and table_name:
                 mcp_result = await delete_archived_records(table_name, filters, user_id)
-            elif tool_name == "get_table_stats" and table_name:
-                mcp_result = await get_table_stats(table_name, filters)
+            elif tool_name == "get_table_stats":
+                # Handle both specific table stats and general database stats
+                if table_name:
+                    mcp_result = await get_table_stats(table_name, filters)
+                else:
+                    # General database stats - use database service directly
+                    from services.region_service import get_region_service
+                    from services.database_service import DatabaseService
+                    
+                    try:
+                        region_service = get_region_service()
+                        current_region = region_service.get_current_region() or region_service.get_default_region()
+                        region_db_session = region_service.get_session(current_region)
+                        
+                        try:
+                            db_service = DatabaseService(region_db_session)
+                            mcp_result = await db_service.get_detailed_table_stats()
+                        finally:
+                            region_db_session.close()
+                    except Exception as e:
+                        logger.error(f"Error getting general database stats: {e}")
+                        mcp_result = {
+                            "success": False,
+                            "error": f"Failed to get general database statistics: {str(e)}"
+                        }
             elif tool_name == "health_check":
                 mcp_result = await health_check()
             else:
@@ -582,8 +605,31 @@ class OpenAIService:
                 mcp_result = await archive_records(table_name, filters, "system")
             elif tool_name == "delete_archived_records" and table_name:
                 mcp_result = await delete_archived_records(table_name, filters, "system")
-            elif tool_name == "get_table_stats" and table_name:
-                mcp_result = await get_table_stats(table_name, filters)
+            elif tool_name == "get_table_stats":
+                # Handle both specific table stats and general database stats
+                if table_name:
+                    mcp_result = await get_table_stats(table_name, filters)
+                else:
+                    # General database stats - use database service directly
+                    from services.region_service import get_region_service
+                    from services.database_service import DatabaseService
+                    
+                    try:
+                        region_service = get_region_service()
+                        current_region = region_service.get_current_region() or region_service.get_default_region()
+                        region_db_session = region_service.get_session(current_region)
+                        
+                        try:
+                            db_service = DatabaseService(region_db_session)
+                            mcp_result = await db_service.get_detailed_table_stats()
+                        finally:
+                            region_db_session.close()
+                    except Exception as e:
+                        logger.error(f"Error getting general database stats: {e}")
+                        mcp_result = {
+                            "success": False,
+                            "error": f"Failed to get general database statistics: {str(e)}"
+                        }
             elif tool_name == "health_check":
                 mcp_result = await health_check()
             else:

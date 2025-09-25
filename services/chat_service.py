@@ -87,6 +87,11 @@ class ChatService:
                     user_message, user_info, db, chat_log, region
                 )
             
+            # Step 0.5: Handle general table statistics requests directly (bypass LLM for reliability)
+            if self._is_general_stats_request(user_message):
+                logger.info(f"Direct general statistics request detected: {user_message}")
+                return await self._handle_general_stats_request(user_info, db, region)
+            
             # Step 1: Let LLM decide everything in one intelligent call
             conversation_history = self._get_conversation_history(chat_log.session_id, db)
             
@@ -240,6 +245,17 @@ class ChatService:
         ]
         return any(pattern in message_upper for pattern in confirmation_patterns)
 
+    def _is_general_stats_request(self, message: str) -> bool:
+        """Check if message is asking for general table statistics"""
+        message_lower = message.lower().strip()
+        general_stats_patterns = [
+            'show table statistics', 'table statistics', 'database statistics',
+            'show database stats', 'show table stats', 'database stats',
+            'show all table stats', 'show stats for all tables', 'table summary',
+            'database summary', 'show all tables', 'list all tables'
+        ]
+        return any(pattern in message_lower for pattern in general_stats_patterns)
+
     async def _handle_operation_confirmation(
         self, 
         user_message: str, 
@@ -329,7 +345,7 @@ class ChatService:
                             user_id = user_info.get("username", "admin")
                             
                             response = f"📦 Archive Operation Completed - {region.upper()} Region\n\n"
-                            response += f"✅ Successfully archived {archived_count:,} records\n"
+                            response += f"✅ Successfully archived **{archived_count:,}** records\n"
                             response += f"From: {table_name}\n"
                             response += f"To: {table_name}_archive\n"
                             response += f"Executed by: {user_id}\n\n"
@@ -341,7 +357,7 @@ class ChatService:
                                 "count": archived_count,
                                 "operation": "archive",
                                 "details": [
-                                    f"Successfully archived {archived_count:,} records",
+                                    f"Successfully archived **{archived_count:,}** records",
                                     f"From: {table_name}",
                                     f"To: {table_name}_archive",
                                     f"Executed by: {user_id}"
@@ -387,7 +403,7 @@ class ChatService:
                             user_id = user_info.get("username", "admin")
                             
                             response = f"🗑️ Delete Operation Completed - {region.upper()} Region\n\n"
-                            response += f"✅ Successfully deleted {deleted_count:,} records\n"
+                            response += f"✅ Successfully deleted **{deleted_count:,}** records\n"
                             response += f"From: {table_name}\n"
                             response += f"Executed by: {user_id}\n\n"
                             response += "⚠️ Records have been permanently removed from the archive table."
@@ -398,7 +414,7 @@ class ChatService:
                                 "count": deleted_count,
                                 "operation": "delete",
                                 "details": [
-                                    f"Successfully deleted {deleted_count:,} records",
+                                    f"Successfully deleted **{deleted_count:,}** records",
                                     f"From: {table_name}",
                                     f"Executed by: {user_id}",
                                     "⚠️ Records have been permanently removed"
@@ -525,6 +541,18 @@ class ChatService:
             
             # Get regional database session
             region_service = get_region_service()
+            
+            # Ensure region is connected
+            if not region_service.is_connected(region):
+                connected, message = await region_service.connect_to_region(region)
+                if not connected:
+                    error_msg = f"Failed to connect to region {region}: {message}"
+                    return ChatResponse(
+                        response=f"❌ Connection Error - {region.upper()} Region\n\n{error_msg}",
+                        response_type="error",
+                        structured_content=self._create_error_structured_content(error_msg, region)
+                    )
+            
             region_db_session = region_service.get_session(region)
             
             try:
@@ -670,7 +698,7 @@ class ChatService:
         # Plain text response for backward compatibility
         response = f"📊 Table Statistics - {region.upper()} Region\n\n"
         response += f"Table: {table_name}\n"
-        response += f"Total Records: {total_count:,}\n"
+        response += f"Total Records: **{total_count:,}**\n"
         
         # Add filter information if available
         if filter_description:
@@ -723,9 +751,9 @@ class ChatService:
         response += f"**Total Records Found: {total_found:,}**\n"
         
         if len(records) != total_found:
-            response += f"Showing: {len(records)} records\n\n"
+            response += f"Showing: **{len(records)}** records\n\n"
         else:
-            response += f"Showing: All {len(records)} records\n\n"
+            response += f"Showing: All **{len(records)}** records\n\n"
 
         if records:
             # Show first few records in a readable format
@@ -793,9 +821,9 @@ class ChatService:
             if table["error"]:
                 response += f"• {table['name']}: ❌ Error - {table['error']}\n"
             else:
-                response += f"• {table['name']}: {table['total_records']:,} total records"
+                response += f"• {table['name']}: **{table['total_records']:,}** total records"
                 if table['age_based_count'] > 0:
-                    response += f", {table['age_based_count']:,} records older than {table['age_days']} days\n"
+                    response += f", **{table['age_based_count']:,}** records older than {table['age_days']} days\n"
                 else:
                     response += "\n"
         
@@ -804,9 +832,9 @@ class ChatService:
             if table["error"]:
                 response += f"• {table['name']}: ❌ Error - {table['error']}\n"
             else:
-                response += f"• {table['name']}: {table['total_records']:,} total records"
+                response += f"• {table['name']}: **{table['total_records']:,}** total records"
                 if table['age_based_count'] > 0:
-                    response += f", {table['age_based_count']:,} records older than {table['age_days']} days\n"
+                    response += f", **{table['age_based_count']:,}** records older than {table['age_days']} days\n"
                 else:
                     response += "\n"
         
@@ -839,7 +867,7 @@ class ChatService:
         # Check if this is a preview (confirmation needed)
         if mcp_result.get('requires_confirmation', False):
             response = f"📦 Archive Preview - {region.upper()} Region\n\n"
-            response += f"Ready to Archive: 🟠 `{count:,} records` 🟠\n"
+            response += f"Ready to Archive: 🟠 **{count:,} records** 🟠\n"
             response += f"From Table: {table_name}\n"
             response += f"To Table: {table_name}_archive\n\n"
             response += "⚠️ This will move records from main table to archive table.\n\n"
@@ -893,7 +921,7 @@ class ChatService:
         # This is the actual result
         if mcp_result.get("success"):
             response = f"📦 Archive Operation Completed - {region.upper()} Region\n\n"
-            response += f"✅ Successfully archived {count:,} records\n"
+            response += f"✅ Successfully archived **{count:,}** records\n"
             response += f"From: {table_name}\n"
             response += f"To: {table_name}_archive\n\n"
             response += "Records have been moved from the main table to the archive table."
@@ -905,7 +933,7 @@ class ChatService:
                 "count": count,
                 "operation": "archive",
                 "details": [
-                    f"Successfully archived {count:,} records",
+                    f"Successfully archived **{count:,}** records",
                     f"From: {table_name}",
                     f"To: {table_name}_archive"
                 ]
@@ -929,7 +957,7 @@ class ChatService:
         # Check if this is a preview (confirmation needed)
         if mcp_result.get('requires_confirmation', False):
             response = f"🗑️ Delete Preview - {region.upper()} Region\n\n"
-            response += f"Ready to Delete: 🔴 `{count:,} records` 🔴\n"
+            response += f"Ready to Delete: 🔴 **{count:,} records** 🔴\n"
             response += f"From Table: {table_name}\n\n"
             response += "🚨 WARNING: THIS WILL PERMANENTLY DELETE RECORDS 🚨\n\n"
             response += "Type 'CONFIRM DELETE' to proceed or 'CANCEL' to abort."
@@ -982,7 +1010,7 @@ class ChatService:
         # This is the actual result
         if mcp_result.get("success"):
             response = f"🗑️ Delete Operation Completed - {region.upper()} Region\n\n"
-            response += f"✅ Successfully deleted {count:,} records\n"
+            response += f"✅ Successfully deleted **{count:,}** records\n"
             response += f"From: {table_name}\n\n"
             response += "⚠️ Records have been permanently removed."
             
@@ -993,7 +1021,7 @@ class ChatService:
                 "count": count,
                 "operation": "delete",
                 "details": [
-                    f"Successfully deleted {count:,} records",
+                    f"Successfully deleted **{count:,}** records",
                     f"From: {table_name}",
                     "⚠️ Records have been permanently removed"
                 ]
