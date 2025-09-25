@@ -1,0 +1,28 @@
+"""Enum definitions for consistent type checking"""
+from enum import Enum
+
+
+class Region(Enum):
+    """Supported database regions"""
+    APAC = "APAC"
+    US = "US"
+    EU = "EU" 
+    MEA = "MEA"
+
+
+class TableName(Enum):
+    """Supported table names"""
+    DSI_ACTIVITIES = "dsiactivities"
+    DSI_TRANSACTION_LOG = "dsitransactionlog"
+    DSI_ACTIVITIES_ARCHIVE = "dsiactivities_archive"
+    DSI_TRANSACTION_LOG_ARCHIVE = "dsitransactionlog_archive"
+    
+    @classmethod
+    def get_valid_names(cls) -> list[str]:
+        """Get list of valid table names"""
+        return [table.value for table in cls]
+    
+    @classmethod
+    def is_valid(cls, name: str) -> bool:
+        """Check if table name is valid"""
+        return name in cls.get_valid_names()
