@@ -249,10 +249,10 @@ class OpenAIService:
             User Message: "{user_message}"
 
             Available MCP Tools:
-            1. query_logs: Query database records with filters
-            2. archive_records: Archive old records to archive tables  
-            3. delete_archived_records: Delete records from archive tables
-            4. get_table_stats: Get table statistics and counts
+            1. get_table_stats: For ACTIVITIES/TRANSACTIONS/ARCHIVE queries (shows counts, not records)
+            2. query_logs: For OTHER table queries (when user wants to see actual data)
+            3. archive_records: Archive old records to archive tables  
+            4. delete_archived_records: Delete records from archive tables
             5. health_check: Check system health
 
             Available Tables:
@@ -267,7 +267,9 @@ class OpenAIService:
             2. "CONVERSATIONAL" - if this should be handled as a conversation
 
             Examples:
-            - "show me recent errors" -> "MCP_TOOL: query_logs dsiactivities {{'filters': {{'ActivityType': 'ERROR'}}, 'limit': 50}}"
+            - "show me recent errors" -> "MCP_TOOL: get_table_stats dsiactivities {{'filters': {{'ActivityType': 'ERROR'}}}}"
+            - "show activities" -> "MCP_TOOL: get_table_stats dsiactivities {{}}"
+            - "list transactions" -> "MCP_TOOL: get_table_stats dsitransactionlog {{}}"
             - "get database stats" -> "MCP_TOOL: get_table_stats dsiactivities {{}}"  
             - "archive old logs from last month" -> "MCP_TOOL: archive_records dsiactivities {{'filters': {{'date_range': 'last_month'}}, 'user_id': 'system'}}"
             - "hello how are you" -> "CONVERSATIONAL"
@@ -486,8 +488,8 @@ class OpenAIService:
             - dsitransactionlog_archive: Archived transaction logs (old records)
 
             Available MCP Tools:
-            1. query_logs - Use for VIEWING/SHOWING/LISTING records (when user wants to see actual data)
-            2. get_table_stats - Use for COUNTING/STATISTICS (when user wants numbers, counts, totals)
+            1. get_table_stats - Use for ACTIVITIES/TRANSACTIONS/ARCHIVE queries (shows counts, not records)
+            2. query_logs - Use for OTHER table queries (when user wants to see actual data from non-activity/transaction tables)
             3. archive_records - Use for archiving old records to archive tables
             4. delete_archived_records - Use for deleting records from archive tables
             5. health_check - Use for system health/status checks
@@ -506,7 +508,8 @@ class OpenAIService:
             
             Key Analysis Rules:
             ✅ COUNT/HOW MANY/STATISTICS queries → ALWAYS use get_table_stats
-            ✅ SHOW/LIST/VIEW/DISPLAY queries → ALWAYS use query_logs
+            ✅ ACTIVITIES/TRANSACTIONS/ARCHIVE QUERIES → ALWAYS use get_table_stats (show counts, not records)
+            ✅ OTHER TABLE QUERIES → Use query_logs for showing actual records
             ✅ GENERAL DATABASE STATS (e.g., "show table statistics", "database statistics") → use get_table_stats with NO table name (leave empty)
             ✅ Table Selection: Use main tables (dsiactivities, dsitransactionlog) unless specifically asked for archived data
             ✅ Context-aware parsing: If user says "show me more" or "archive those", refer to previous conversation
@@ -520,6 +523,18 @@ class OpenAIService:
             "count of activities older than 12 months"
             → Analysis: COUNT query + date filter + specific table
             → MCP_TOOL: get_table_stats dsiactivities {{"date_filter": "older_than_12_months"}}
+
+            "show activities from last month"
+            → Analysis: SHOW query + activities table → Use get_table_stats (show counts, not records)
+            → MCP_TOOL: get_table_stats dsiactivities {{"date_filter": "from_last_month"}}
+
+            "list transactions"
+            → Analysis: LIST query + transactions table → Use get_table_stats (show counts, not records)
+            → MCP_TOOL: get_table_stats dsitransactionlog {{}}
+
+            "display archive records"
+            → Analysis: DISPLAY query + archive table → Use get_table_stats (show counts, not records)
+            → MCP_TOOL: get_table_stats dsiactivities_archive {{}}
 
             "show table statistics" or "database statistics"
             → Analysis: GENERAL STATISTICS query + no specific table

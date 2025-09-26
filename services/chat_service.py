@@ -250,7 +250,13 @@ class ChatService:
                 return self._format_stats_response(mcp_result, table_used, region)
                 
             elif tool_used == "query_logs":
-                return self._format_query_response(mcp_result, table_used, region)
+                # For activities/transactions/archive tables, redirect to stats (count only)
+                if table_used in ['dsiactivities', 'dsitransactionlog', 'dsiactivities_archive', 'dsitransactionlog_archive']:
+                    logger.info(f"Redirecting query_logs for {table_used} to stats display (count only)")
+                    return self._format_stats_response(mcp_result, table_used, region)
+                else:
+                    # For other tables (if any), show actual records
+                    return self._format_query_response(mcp_result, table_used, region)
                 
             elif tool_used == "archive_records":
                 return self._format_archive_response(mcp_result, table_used, region, session_id)
@@ -1003,18 +1009,26 @@ class ChatService:
         filter_description = mcp_result.get("filter_description")
         
         # Plain text response for backward compatibility
-        response = f"📊 Table Statistics - {region.upper()} Region\n\n"
-        response += f"Table: {table_name}\n"
-        response += f"Total Records: **{total_count:,}**\n"
+        is_activity_transaction_archive = table_name in ['dsiactivities', 'dsitransactionlog', 'dsiactivities_archive', 'dsitransactionlog_archive']
+        
+        if is_activity_transaction_archive:
+            response = f"📊 Record Count - {region.upper()} Region\n\n"
+            response += f"Table: {table_name}\n"
+            response += f"Total Records: **{total_count:,}** (showing count only, not actual records)\n"
+        else:
+            response = f"📊 Table Statistics - {region.upper()} Region\n\n" 
+            response += f"Table: {table_name}\n"
+            response += f"Total Records: **{total_count:,}**\n"
         
         # Add filter information if available
         if filter_description:
             response += f"Filter: Records {filter_description}\n"
 
         # Structured content for rich rendering
+        title = f"Record Count - {region.upper()} Region" if is_activity_transaction_archive else f"Table Statistics - {region.upper()} Region"
         structured_content = {
             "type": "stats_card",
-            "title": f"Table Statistics - {region.upper()} Region",
+            "title": title,
             "icon": "📊",
             "table_name": table_name,
             "region": region.upper(),
@@ -1053,40 +1067,25 @@ class ChatService:
         total_found = mcp_result.get("total_records", len(records))
         
         # Plain text response for backward compatibility
-        response = f"📋 Query Results - {region.upper()} Region\n\n"
+        response = f"� Record Count - {region.upper()} Region\n\n"
         response += f"Table: {table_name}\n"
-        response += f"**Total Records Found: {total_found:,}**\n"
-        
-        if len(records) != total_found:
-            response += f"Showing: **{len(records)}** records\n\n"
-        else:
-            response += f"Showing: All **{len(records)}** records\n\n"
+        response += f"**Total Records Found: {total_found:,}**\n\n"
 
-        if records:
-            # Show first few records in a readable format
-            for i, record in enumerate(records[:5], 1):
-                response += f"Record {i}:\n"
-                for key, value in record.items():
-                    response += f"  • {key}: {value}\n"
-                response += "\n"
-            
-            if len(records) > 5:
-                response += f"... and {len(records) - 5} more records\n"
+        if total_found > 0:
+            response += f"Found **{total_found:,}** records (showing count only, not actual records)\n"
         else:
             response += "No matching records found.\n"
         
-        # Structured content for table rendering
+        # Structured content as stats card (no table data shown)
         structured_content = {
-            "type": "data_table",
-            "title": f"Query Results - {region.upper()} Region",
-            "icon": "📋",
+            "type": "stats_card",
+            "title": f"Record Count - {region.upper()} Region",
+            "icon": "�",
             "table_name": table_name,
             "region": region.upper(),
-            "total_count": total_found,
-            "showing_count": len(records),
-            "columns": list(records[0].keys()) if records else [],
-            "data": records[:10],  # Limit to first 10 records for display
-            "has_more": len(records) > 10
+            "stats": [
+                {"label": "Total Records Found", "value": f"{total_found:,}", "type": "number", "highlight": True},
+            ]
         }
         
         return ChatResponse(
