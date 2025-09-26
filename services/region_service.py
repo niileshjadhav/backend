@@ -7,7 +7,9 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.engine import Engine
 import asyncio
 from contextlib import asynccontextmanager
-from shared.enums import Region, TableName
+from shared.enums import TableName, Region
+from database import get_db
+from services.region_config_service import get_region_config_service
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -18,29 +20,40 @@ class RegionService:
     """Service for managing regional database connections"""
     
     def __init__(self):
-        # Get region-specific database URLs from environment variables
-        self.region_database_urls = {
-            Region.APAC: os.getenv("DATABASE_URL_APAC"),
-            Region.US: os.getenv("DATABASE_URL_US"),
-            Region.EU: os.getenv("DATABASE_URL_EU"),
-            Region.MEA: os.getenv("DATABASE_URL_MEA")
-        }
-        
-        self.engines: Dict[Region, Engine] = {}
-        self.session_makers: Dict[Region, sessionmaker] = {}
-        self.connection_status: Dict[Region, bool] = {}
+        self.engines: Dict[str, Engine] = {}
+        self.session_makers: Dict[str, sessionmaker] = {}
+        self.connection_status: Dict[str, bool] = {}
+        self.region_config_service = get_region_config_service()
+    
+    def _get_database_url_for_region(self, region: str) -> Optional[str]:
+        """Get database URL for a region from database configuration"""
+        try:
+            # Get a database session to query region configs
+            db = next(get_db())
+            try:
+                return self.region_config_service.get_database_url(db, region)
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"Failed to get database URL for region {region}: {e}")
+            return None
     
     def get_available_regions(self) -> list[str]:
-        """Get list of available regions"""
-        return [region.value for region in Region]
+        """Get list of available regions from database configuration"""
+        try:
+            db = next(get_db())
+            try:
+                return self.region_config_service.get_available_regions(db)
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"Failed to get available regions: {e}")
+            # Fallback to default regions if database is not available
+            return ["US", "EU", "APAC", "MEA"]
     
     def is_region_valid(self, region: str) -> bool:
         """Check if a region is valid"""
-        try:
-            Region(region)
-            return True
-        except ValueError:
-            return False
+        return region in self.get_available_regions()
     
     def get_valid_regions(self) -> list[str]:
         """Get list of valid regions (same as available)"""
@@ -50,24 +63,26 @@ class RegionService:
         """Get the default region"""
         # Return the first available region as default
         available = self.get_available_regions()
-        return available[0] if available else Region.US.value
+        return available[0] if available else "US"
     
     def set_current_region(self, region: str):
         """Set the current region (for logging/tracking purposes)"""
         if self.is_region_valid(region):
-            # Just log the current region, no need to store state
-            pass
+            self.current_region = region
         else:
             logger.warning(f"Attempted to set invalid region: {region}")
+    
+    def get_current_region(self) -> Optional[str]:
+        """Get the current region"""
+        return getattr(self, 'current_region', None)
     
     async def connect_to_region(self, region: str) -> Tuple[bool, str]:
         """Connect to a specific region database"""
         try:
-            region_enum = Region(region)
-            database_url = self.region_database_urls[region_enum]
+            database_url = self._get_database_url_for_region(region)
             
             if not database_url:
-                return False, f"Database URL not configured for region {region}"
+                return False, f"Database URL not configured for region {region}. Please configure region settings first."
             
             # Create engine
             engine = create_engine(
@@ -81,28 +96,54 @@ class RegionService:
             with engine.connect() as conn:
                 result = conn.execute(text("SELECT 1")).fetchone()
                 if result:
-                    self.engines[region_enum] = engine
-                    self.session_makers[region_enum] = sessionmaker(bind=engine)
-                    self.connection_status[region_enum] = True
+                    self.engines[region] = engine
+                    self.session_makers[region] = sessionmaker(bind=engine)
+                    self.connection_status[region] = True
+                    
+                    # Update connection status in database
+                    db = next(get_db())
+                    try:
+                        self.region_config_service.update_connection_status(db, region, True)
+                    finally:
+                        db.close()
                     
                     return True, f"Connected to {region} region successfully"
                 
         except Exception as e:
             logger.error(f"Failed to connect to region {region}: {e}")
-            self.connection_status[Region(region)] = False
+            self.connection_status[region] = False
+            
+            # Update connection status in database
+            try:
+                db = next(get_db())
+                try:
+                    self.region_config_service.update_connection_status(db, region, False)
+                finally:
+                    db.close()
+            except:
+                pass  # Don't fail if we can't update status
+                    
             return False, f"Failed to connect to {region}: {str(e)}"
     
     async def disconnect_from_region(self, region: str) -> Tuple[bool, str]:
         """Disconnect from a specific region database"""
         try:
-            region_enum = Region(region)
-            
-            if region_enum in self.engines:
-                self.engines[region_enum].dispose()
-                del self.engines[region_enum]
-                del self.session_makers[region_enum]
+            if region in self.engines:
+                self.engines[region].dispose()
+                del self.engines[region]
+                del self.session_makers[region]
                 
-            self.connection_status[region_enum] = False
+            self.connection_status[region] = False
+            
+            # Update connection status in database
+            try:
+                db = next(get_db())
+                try:
+                    self.region_config_service.update_connection_status(db, region, False)
+                finally:
+                    db.close()
+            except:
+                pass  # Don't fail if we can't update status
             
             return True, f"Disconnected from {region} region successfully"
             
@@ -113,25 +154,22 @@ class RegionService:
     def get_connection_status(self, region: str = None) -> Dict[str, bool]:
         """Get connection status for regions"""
         if region:
-            try:
-                region_enum = Region(region)
-                return {region: self.connection_status.get(region_enum, False)}
-            except ValueError:
-                return {region: False}
+            return {region: self.connection_status.get(region, False)}
         
+        # Get all available regions from the database configuration
+        available_regions = self.get_available_regions()
         return {
-            region.value: self.connection_status.get(region, False) 
-            for region in Region
+            region: self.connection_status.get(region, False) 
+            for region in available_regions
         }
     
     def get_session(self, region: str):
         """Get database session for a specific region"""
         try:
-            region_enum = Region(region)
-            if region_enum not in self.session_makers:
+            if region not in self.session_makers:
                 raise ValueError(f"Not connected to region: {region}")
             
-            return self.session_makers[region_enum]()
+            return self.session_makers[region]()
             
         except Exception as e:
             logger.error(f"Failed to get session for region {region}: {e}")
@@ -139,21 +177,15 @@ class RegionService:
     
     def is_connected(self, region: str) -> bool:
         """Check if connected to a specific region"""
-        try:
-            region_enum = Region(region)
-            return self.connection_status.get(region_enum, False)
-        except ValueError:
-            return False
+        return self.connection_status.get(region, False)
     
     async def test_connection(self, region: str) -> Tuple[bool, str, Dict]:
         """Test connection to a region and return detailed status"""
         try:
-            region_enum = Region(region)
-            
-            if region_enum not in self.engines:
+            if region not in self.engines:
                 return False, f"Not connected to {region}", {}
             
-            engine = self.engines[region_enum]
+            engine = self.engines[region]
             
             # Test query
             with engine.connect() as conn:

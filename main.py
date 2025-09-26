@@ -11,6 +11,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 from database import test_connection, Base, engine
+# Import all models to ensure they are registered with SQLAlchemy
+from models import (DSIActivities, ArchiveDSIActivities, DSITransactionLog, 
+                   ArchiveDSITransactionLog, AuditLog, User, ChatOpsLog, RegionConfig)
 from api import chat_router
 from api.auth import router as auth_router
 from api.regions import router as regions_router
@@ -21,7 +24,7 @@ try:
     inspector = inspect(engine)
     existing_tables = inspector.get_table_names()
     
-    required_tables = ['dsiactivities', 'dsiactivities_archive', 'dsitransactionlog', 'dsitransactionlog_archive']
+    required_tables = ['dsiactivities', 'dsiactivities_archive', 'dsitransactionlog', 'dsitransactionlog_archive', 'region_config']
     missing_tables = [t for t in required_tables if t not in existing_tables]
     
     if missing_tables:
@@ -93,6 +96,8 @@ async def options_handler(request: Request, path: str):
 app.include_router(auth_router)
 app.include_router(chat_router)
 app.include_router(regions_router)
+from api.region_config import router as region_config_router
+app.include_router(region_config_router)
 
 if __name__ == "__main__":
     import uvicorn

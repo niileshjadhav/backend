@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from typing import Optional
 from datetime import datetime
 
+from database import get_db
 from services.region_service import get_region_service
 from services.auth_service import AuthService
 from schemas import (
@@ -50,12 +51,11 @@ async def connect_to_region(
         # Attempt connection
         success, message = await region_service.connect_to_region(request.region)
         
-        # Get tables info if connection successful
+        # Get basic tables info if connection successful
         tables_info = None
         if success:
             test_success, test_message, tables_info = await region_service.test_connection(request.region)
             if not test_success:
-                # Connection established but test failed
                 message += f". Warning: {test_message}"
         
         return RegionConnectionResponse(
@@ -91,14 +91,27 @@ async def disconnect_from_region(
         raise HTTPException(status_code=500, detail=f"Failed to disconnect from region: {str(e)}")
 
 @router.get("/")
-async def get_available_options():
-    """Get available regions for UI dropdowns"""
+async def get_available_options(
+    db: Session = Depends(get_db),
+    authorization: Optional[str] = Header(None)
+):
+    """Get available regions and connection status for UI dropdowns"""
+    # Authentication required but available to all roles
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Authorization header required")
+    
+    try:
+        auth_service.verify_token(authorization.replace("Bearer ", ""))
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    
     try:
         region_service = get_region_service()
         
         return {
             "regions": region_service.get_available_regions(),
-            "connection_status": region_service.get_connection_status()
+            "connection_status": region_service.get_connection_status(),
+            "count": len(region_service.get_available_regions())
         }
         
     except Exception as e:
