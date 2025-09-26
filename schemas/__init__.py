@@ -87,29 +87,17 @@ class ConfirmationRequest(BaseModel):
 # Region configuration schemas
 class RegionConfigCreate(BaseModel):
     region: str
-    host: str
-    port: int
-    username: str
-    password: str
-    database_name: str
+    connection_string: str
     connection_notes: Optional[str] = None
 
 class RegionConfigUpdate(BaseModel):
-    host: Optional[str] = None
-    port: Optional[int] = None
-    username: Optional[str] = None
-    password: Optional[str] = None
-    database_name: Optional[str] = None
+    connection_string: Optional[str] = None
     is_active: Optional[bool] = None
     connection_notes: Optional[str] = None
 
 class RegionConfigResponse(BaseModel):
     id: int
     region: str
-    host: str
-    port: int
-    username: str
-    database_name: str
     connection_notes: Optional[str]
     is_active: bool
     is_connected: bool

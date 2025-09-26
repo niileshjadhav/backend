@@ -7,7 +7,6 @@ from datetime import datetime
 from models.region_config import RegionConfig
 from database import get_db
 from shared.enums import Region
-import bcrypt
 
 logger = logging.getLogger(__name__)
 
@@ -18,25 +17,24 @@ class RegionConfigService:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
     
-    def _encrypt_password(self, password: str) -> str:
-        """Encrypt password using bcrypt"""
-        salt = bcrypt.gensalt()
-        hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
-        return hashed.decode('utf-8')
-    
-    def _verify_password(self, password: str, hashed: str) -> bool:
-        """Verify password against hash"""
-        return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
+    def _validate_connection_string(self, connection_string: str) -> bool:
+        """Validate connection string format"""
+        try:
+            # Basic validation - should start with a database scheme
+            if not connection_string or not isinstance(connection_string, str):
+                return False
+            
+            # Should contain common database schemes
+            valid_schemes = ['mysql://', 'mysql+pymysql://', 'postgresql://', 'sqlite:///', 'mssql://', 'oracle://']
+            return any(connection_string.startswith(scheme) for scheme in valid_schemes)
+        except Exception:
+            return False
     
     def create_region_config(
         self, 
         db: Session,
         region: str,
-        host: str,
-        port: int,
-        username: str,
-        password: str,
-        database_name: str,
+        connection_string: str,
         connection_notes: Optional[str] = None
     ) -> RegionConfig:
         """Create a new region configuration"""
@@ -48,22 +46,19 @@ class RegionConfigService:
             # Normalize region name (uppercase, strip whitespace)
             region = region.strip().upper()
             
+            # Validate connection string
+            if not self._validate_connection_string(connection_string):
+                raise ValueError(f"Invalid connection string format")
+            
             # Check if region already exists
             existing = db.query(RegionConfig).filter(RegionConfig.region == region).first()
             if existing:
                 raise ValueError(f"Region {region} already exists")
             
-            # Store password in plain text for database connections
-            # Note: These are internal database credentials, not user passwords
-            
             # Create new config
             config = RegionConfig(
                 region=region,
-                host=host,
-                port=port,
-                username=username,
-                password=password,  # Store as plain text for database connections
-                database_name=database_name,
+                connection_string=connection_string,
                 connection_notes=connection_notes,
                 is_active=True
             )
@@ -84,11 +79,7 @@ class RegionConfigService:
         self,
         db: Session,
         region: str,
-        host: Optional[str] = None,
-        port: Optional[int] = None,
-        username: Optional[str] = None,
-        password: Optional[str] = None,
-        database_name: Optional[str] = None,
+        connection_string: Optional[str] = None,
         is_active: Optional[bool] = None,
         connection_notes: Optional[str] = None
     ) -> Optional[RegionConfig]:
@@ -99,16 +90,10 @@ class RegionConfigService:
                 raise ValueError(f"Region {region} not found")
             
             # Update fields if provided
-            if host is not None:
-                config.host = host
-            if port is not None:
-                config.port = port
-            if username is not None:
-                config.username = username
-            if password is not None:
-                config.password = password  # Store as plain text for database connections
-            if database_name is not None:
-                config.database_name = database_name
+            if connection_string is not None:
+                if not self._validate_connection_string(connection_string):
+                    raise ValueError(f"Invalid connection string format")
+                config.connection_string = connection_string
             if is_active is not None:
                 config.is_active = is_active
             if connection_notes is not None:

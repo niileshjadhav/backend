@@ -28,11 +28,7 @@ async def create_region_config(
         config = region_config_service.create_region_config(
             db=db,
             region=config_data.region,
-            host=config_data.host,
-            port=config_data.port,
-            username=config_data.username,
-            password=config_data.password,
-            database_name=config_data.database_name,
+            connection_string=config_data.connection_string,
             connection_notes=config_data.connection_notes
         )
         
@@ -63,10 +59,6 @@ async def get_region_configs(
             config_dict = {
                 "id": config.id,
                 "region": config.region,
-                "host": config.host,
-                "port": config.port,
-                "username": config.username,
-                "database_name": config.database_name,
                 "connection_notes": config.connection_notes,
                 "is_active": config.is_active,
                 "is_connected": region_service.is_connected(config.region),
@@ -102,10 +94,6 @@ async def get_region_config(
         result = {
             "id": config.id,
             "region": config.region,
-            "host": config.host,
-            "port": config.port,
-            "username": config.username,
-            "database_name": config.database_name,
             "connection_notes": config.connection_notes,
             "is_active": config.is_active,
             "is_connected": region_service.is_connected(config.region),
@@ -135,11 +123,7 @@ async def update_region_config(
         config = region_config_service.update_region_config(
             db=db,
             region=region,
-            host=config_data.host,
-            port=config_data.port,
-            username=config_data.username,
-            password=config_data.password,
-            database_name=config_data.database_name,
+            connection_string=config_data.connection_string,
             is_active=config_data.is_active,
             connection_notes=config_data.connection_notes
         )
