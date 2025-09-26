@@ -130,23 +130,25 @@ async def _query_logs(
                     # For "recent" filter, we want records NEWER than cutoff (greater than)
                     # For other filters like "older_than_X", we want records OLDER than cutoff (less than)
                     if filters and filters.get("date_filter") == "recent":
-                        # Recent records: PostedTime >= cutoff_string
-                        if hasattr(model, 'EndDateTime'):
-                            query = query.filter(model.EndDateTime >= cutoff_string)
-                        elif hasattr(model, 'TransactionDateTime'):
-                            query = query.filter(model.TransactionDateTime >= cutoff_string)
-                        elif hasattr(model, 'PostedTime'):
-                            # PostedTime is stored as YYYYMMDDHHMMSS string
+                        # Recent records: date field >= cutoff_string
+                        if hasattr(model, 'PostedTime'):
+                            # Activities tables use PostedTime
                             query = query.filter(model.PostedTime >= cutoff_string)
+                        elif hasattr(model, 'WhenReceived'):
+                            # Transaction tables use WhenReceived
+                            query = query.filter(model.WhenReceived >= cutoff_string)
+                        elif hasattr(model, 'EndDateTime'):
+                            query = query.filter(model.EndDateTime >= cutoff_string)
                     else:
-                        # Older records: PostedTime < cutoff_string
-                        if hasattr(model, 'EndDateTime'):
-                            query = query.filter(model.EndDateTime < cutoff_string)
-                        elif hasattr(model, 'TransactionDateTime'):
-                            query = query.filter(model.TransactionDateTime < cutoff_string)
-                        elif hasattr(model, 'PostedTime'):
-                            # PostedTime is stored as YYYYMMDDHHMMSS string
+                        # Older records: date field < cutoff_string
+                        if hasattr(model, 'PostedTime'):
+                            # Activities tables use PostedTime
                             query = query.filter(model.PostedTime < cutoff_string)
+                        elif hasattr(model, 'WhenReceived'):
+                            # Transaction tables use WhenReceived
+                            query = query.filter(model.WhenReceived < cutoff_string)
+                        elif hasattr(model, 'EndDateTime'):
+                            query = query.filter(model.EndDateTime < cutoff_string)
             
             # Apply offset and limit
             query = query.offset(offset)
@@ -158,7 +160,7 @@ async def _query_logs(
             
             # Convert to dict format with formatted dates
             records_list = []
-            date_columns = ['PostedTime', 'EndDateTime', 'TransactionDateTime', 'StartDateTime']
+            date_columns = ['PostedTime', 'EndDateTime', 'WhenReceived', 'WhenProcessed', 'WhenExtracted', 'DeviceUTCTime', 'DeviceLocalTime', 'StartDateTime']
             
             for record in records:
                 record_dict = {}
@@ -271,6 +273,10 @@ async def _archive_records(
             
             # Create a mock ParsedOperation for the CRUDService
             from services.prompt_parser import ParsedOperation
+            
+            # CRITICAL FIX: Ensure the confirmed flag is preserved in filters for proper execution
+            if is_confirmed and "confirmed" not in processed_filters:
+                processed_filters["confirmed"] = True
             
             mock_operation = ParsedOperation(
                 action="ARCHIVE",
@@ -528,31 +534,28 @@ async def _get_table_stats(
                     # For "recent" filter, we want records NEWER than cutoff (greater than)
                     # For other filters like "older_than_X", we want records OLDER than cutoff (less than)
                     if filters and filters.get("date_filter") == "recent":
-                        # Recent records: PostedTime >= cutoff_string
-                        if hasattr(model, 'EndDateTime'):
-                            query = query.filter(model.EndDateTime >= cutoff_string)
-                        elif hasattr(model, 'TransactionDateTime'):
-                            query = query.filter(model.TransactionDateTime >= cutoff_string)
-                        elif hasattr(model, 'PostedTime'):
-                            # PostedTime is stored as YYYYMMDDHHMMSS string
+                        # Recent records: date field >= cutoff_string
+                        if hasattr(model, 'PostedTime'):
+                            # Activities tables use PostedTime
                             query = query.filter(model.PostedTime >= cutoff_string)
+                        elif hasattr(model, 'WhenReceived'):
+                            # Transaction tables use WhenReceived
+                            query = query.filter(model.WhenReceived >= cutoff_string)
+                        elif hasattr(model, 'EndDateTime'):
+                            query = query.filter(model.EndDateTime >= cutoff_string)
                     else:
-                        # Older records: PostedTime < cutoff_string
-                        if hasattr(model, 'EndDateTime'):
-                            query = query.filter(model.EndDateTime < cutoff_string)
-                        elif hasattr(model, 'TransactionDateTime'):
-                            query = query.filter(model.TransactionDateTime < cutoff_string)
-                        elif hasattr(model, 'PostedTime'):
-                            # PostedTime is stored as YYYYMMDDHHMMSS string
+                        # Older records: date field < cutoff_string
+                        if hasattr(model, 'PostedTime'):
+                            # Activities tables use PostedTime
                             query = query.filter(model.PostedTime < cutoff_string)
+                        elif hasattr(model, 'WhenReceived'):
+                            # Transaction tables use WhenReceived
+                            query = query.filter(model.WhenReceived < cutoff_string)
+                        elif hasattr(model, 'EndDateTime'):
+                            query = query.filter(model.EndDateTime < cutoff_string)
                     
-                    # Get filtered count after applying the filter
-                    if hasattr(model, 'SequenceID'):
-                        filtered_count = query.with_entities(func.count(model.SequenceID)).scalar()
-                    elif hasattr(model, 'RecordID'):
-                        filtered_count = query.with_entities(func.count(model.RecordID)).scalar()
-                    else:
-                        filtered_count = query.count()
+                    # Get filtered count after applying the filter - use .count() to include all rows
+                    filtered_count = query.count()
                     
 
             
@@ -563,15 +566,17 @@ async def _get_table_stats(
             latest_date = earliest_date = None
             date_query = query if filters and "date_filter" in filters else base_query
             
-            if hasattr(model, 'EndDateTime'):
-                latest_date = date_query.with_entities(func.max(model.EndDateTime)).scalar()
-                earliest_date = date_query.with_entities(func.min(model.EndDateTime)).scalar()
-            elif hasattr(model, 'TransactionDateTime'):
-                latest_date = date_query.with_entities(func.max(model.TransactionDateTime)).scalar()
-                earliest_date = date_query.with_entities(func.min(model.TransactionDateTime)).scalar()
-            elif hasattr(model, 'PostedTime'):
+            if hasattr(model, 'PostedTime'):
+                # Activities table uses PostedTime
                 latest_date = date_query.with_entities(func.max(model.PostedTime)).scalar()
                 earliest_date = date_query.with_entities(func.min(model.PostedTime)).scalar()
+            elif hasattr(model, 'WhenReceived'):
+                # Transaction table uses WhenReceived
+                latest_date = date_query.with_entities(func.max(model.WhenReceived)).scalar()
+                earliest_date = date_query.with_entities(func.min(model.WhenReceived)).scalar()
+            elif hasattr(model, 'EndDateTime'):
+                latest_date = date_query.with_entities(func.max(model.EndDateTime)).scalar()
+                earliest_date = date_query.with_entities(func.min(model.EndDateTime)).scalar()
             
             # Build response based on whether filters were applied
             if filters and "date_filter" in filters:
@@ -943,13 +948,13 @@ activities_schema = {
 transaction_schema = {
     "table": "dsitransactionlog", 
     "columns": [
-        {"name": "id", "type": "int", "description": "Unique identifier"},
-        {"name": "UserName", "type": "string", "description": "User who made transaction"},
+        {"name": "RecordID", "type": "int", "description": "Unique identifier"},
+        {"name": "UserID", "type": "string", "description": "User who made transaction"},
         {"name": "TransactionType", "type": "string", "description": "Type of transaction"},
-        {"name": "TransactionDateTime", "type": "datetime", "description": "When transaction occurred"},
-        {"name": "Amount", "type": "decimal", "description": "Transaction amount"},
-        {"name": "ServiceName", "type": "string", "description": "Service involved"},
-        {"name": "Region", "type": "string", "description": "Geographic region"}
+        {"name": "WhenReceived", "type": "datetime", "description": "When transaction was received"},
+        {"name": "WhenProcessed", "type": "datetime", "description": "When transaction was processed"},
+        {"name": "ServerName", "type": "string", "description": "Server involved"},
+        {"name": "DeviceID", "type": "string", "description": "Device identifier"}
     ],
     "sample_filters": {
         "UserName": "jane.smith",

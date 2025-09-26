@@ -135,7 +135,21 @@ class ChatService:
                         db.commit()
                         db.refresh(chat_log)
                     
-                    return self._format_response_by_tool(llm_result, region, final_session_id)
+                    # CRITICAL FIX: Store table name and operation type so confirmation process can find it later
+                    if chat_log:
+                        chat_log.operation_type = llm_result.tool_used.upper() if llm_result.tool_used else None
+                        chat_log.table_name = llm_result.table_used if hasattr(llm_result, 'table_used') else None
+                        db.commit()
+                    
+                    # Format the response
+                    formatted_response = self._format_response_by_tool(llm_result, region, final_session_id)
+                    
+                    # CRITICAL FIX: Update ChatOpsLog with the formatted bot response so confirmation can find preview operations
+                    if chat_log and formatted_response:
+                        chat_log.bot_response = formatted_response.response
+                        db.commit()
+                    
+                    return formatted_response
                 else:
                     # Conversational response
                     return await self._handle_conversational(
@@ -407,7 +421,6 @@ class ChatService:
                         break
                 
                 if not preview_operation:
-                    logger.warning("No preview operation found in conversation history for confirmation")
                     # Try to find any archive/delete related message in recent history
                     for log in recent_logs:
                         if log.user_message and any(keyword in log.user_message.lower() for keyword in ['archive', 'delete']):
@@ -422,11 +435,25 @@ class ChatService:
                 else:
                     # Last resort: Try to parse from conversation history using LLM
                     
-                    # Simplified confirmation prompt
+                    # CRITICAL FIX: Don't hardcode table names in fallback - this causes wrong table targeting
                     if "CONFIRM ARCHIVE" in message_upper:
-                        confirmation_prompt = "The user wants to confirm an archive operation. Use archive_records with dsiactivities table and confirmed=true filter."
+                        return ChatResponse(
+                            response="❌ Archive Confirmation Failed\n\nCannot determine which table to archive. Please start a new archive operation by saying something like:\n• 'archive transactions older than 30 days'\n• 'archive activities older than 30 days'",
+                            response_type="error",
+                            structured_content=self._create_error_structured_content(
+                                "Cannot determine target table for archive operation. Please start a new operation.",
+                                region
+                            )
+                        )
                     elif "CONFIRM DELETE" in message_upper:
-                        confirmation_prompt = "The user wants to confirm a delete operation. Use delete_archived_records with dsiactivities table and confirmed=true filter."
+                        return ChatResponse(
+                            response="❌ Delete Confirmation Failed\n\nCannot determine which archived table to delete from. Please start a new delete operation by saying something like:\n• 'delete archived transactions older than 60 days'\n• 'delete archived activities older than 60 days'",
+                            response_type="error",
+                            structured_content=self._create_error_structured_content(
+                                "Cannot determine target table for delete operation. Please start a new operation.",
+                                region
+                            )
+                        )
                     else:
                         confirmation_prompt = f"The user is confirming an operation: {user_message}"
                     
@@ -617,20 +644,24 @@ class ChatService:
             
             # Determine operation type and table
             if "CONFIRM ARCHIVE" in message_upper:
-                # Determine table name
-                if "activities" in user_message or "activity" in user_message:
-                    table_name = "dsiactivities"
-                elif "transaction" in user_message:
-                    table_name = "dsitransactionlog"
-                else:
-                    # Try to extract from bot response if available
-                    if preview_operation.bot_response and "dsiactivities" in preview_operation.bot_response.lower():
+                # CRITICAL FIX: Use the stored table name from the preview operation
+                table_name = preview_operation.table_name
+                
+                # Fallback logic if table_name is not stored (backward compatibility)
+                if not table_name:
+                    if "activities" in user_message or "activity" in user_message:
                         table_name = "dsiactivities"
-                    elif preview_operation.bot_response and "dsitransactionlog" in preview_operation.bot_response.lower():
+                    elif "transaction" in user_message:
                         table_name = "dsitransactionlog"
                     else:
-                        # Default fallback - most common case
-                        table_name = "dsiactivities"
+                        # Try to extract from bot response if available
+                        if preview_operation.bot_response and "dsitransactionlog" in preview_operation.bot_response.lower():
+                            table_name = "dsitransactionlog"
+                        elif preview_operation.bot_response and "dsiactivities" in preview_operation.bot_response.lower():
+                            table_name = "dsiactivities"
+                        else:
+                            # Last resort fallback
+                            table_name = "dsiactivities"
                 
                 # Extract filters from original user message
                 filters = self._extract_filters_from_message(user_message)
@@ -649,20 +680,24 @@ class ChatService:
                 return MockLLMResult("archive_records", table_name, mcp_result)
                 
             elif "CONFIRM DELETE" in message_upper:
-                # Determine table name
-                if "activities" in user_message or "activity" in user_message:
-                    table_name = "dsiactivities"
-                elif "transaction" in user_message:
-                    table_name = "dsitransactionlog"
-                else:
-                    # Try to extract from bot response if available
-                    if preview_operation.bot_response and "dsiactivities" in preview_operation.bot_response.lower():
+                # CRITICAL FIX: Use the stored table name from the preview operation
+                table_name = preview_operation.table_name
+                
+                # Fallback logic if table_name is not stored (backward compatibility)
+                if not table_name:
+                    if "activities" in user_message or "activity" in user_message:
                         table_name = "dsiactivities"
-                    elif preview_operation.bot_response and "dsitransactionlog" in preview_operation.bot_response.lower():
+                    elif "transaction" in user_message:
                         table_name = "dsitransactionlog"
                     else:
-                        # Default fallback - most common case
-                        table_name = "dsiactivities"
+                        # Try to extract from bot response if available
+                        if preview_operation.bot_response and "dsitransactionlog" in preview_operation.bot_response.lower():
+                            table_name = "dsitransactionlog"
+                        elif preview_operation.bot_response and "dsiactivities" in preview_operation.bot_response.lower():
+                            table_name = "dsiactivities"
+                        else:
+                            # Last resort fallback
+                            table_name = "dsiactivities"
                 
                 # Extract filters from original user message
                 filters = self._extract_filters_from_message(user_message)
@@ -727,109 +762,28 @@ class ChatService:
             
             # Use default operations with system safety filters
             if "CONFIRM ARCHIVE" in message_upper:
-                # Default archive with 7-day safety filter (applied by MCP server)
-                table_name = "dsiactivities"  # Most common case
-                filters = {"confirmed": True}  # Let system apply default 7-day filter
-                
-                mcp_result = await archive_records(table_name, filters, "system")
-                
-                if mcp_result.get("success"):
-                    archived_count = mcp_result.get("archived_count", 0)
-                    user_id = user_info.get("username", "admin") if user_info else "admin"
-                    
-                    response = f"📦 Archive Operation Completed (Fallback) - {region.upper()} Region\n\n"
-                    response += f"✅ Successfully archived **{archived_count:,}** records\n"
-                    response += f"From: {table_name}\n"
-                    response += f"To: {table_name}_archive\n"
-                    response += f"Executed by: {user_id}\n\n"
-                    response += "Records have been moved from the main table to the archive table.\n"
-                    response += f"🛡️ Applied default safety filter: Records older than 7 days"
-                    
-                    structured_content = {
-                        "type": "success_card",
-                        "title": f"Archive Completed (Fallback) - {region.upper()} Region",
-                        "count": archived_count,
-                        "operation": "archive",
-                        "details": [
-                            f"Successfully archived **{archived_count:,}** records",
-                            f"From: {table_name}",
-                            f"To: {table_name}_archive",
-                            f"Executed by: {user_id}",
-                            "🛡️ Applied default safety filter: Records older than 7 days"
-                        ]
-                    }
-                    
-                    return ChatResponse(
-                        response=response,
-                        response_type="archive_completed",
-                        structured_content=structured_content,
-                        context={
-                            "operation": "archive",
-                            "archived_count": archived_count,
-                            "table": table_name,
-                            "confirmed": True,
-                            "fallback": True
-                        }
+                # CRITICAL FIX: Don't assume activities table - this causes transaction archives to target wrong table
+                # This fallback should not be used as it can't reliably determine the intended table
+                return ChatResponse(
+                    response="❌ Archive Confirmation Failed\n\nCannot determine which table to archive. Please start a new archive operation by saying something like:\n• 'archive transactions older than 30 days'\n• 'archive activities older than 30 days'",
+                    response_type="error",
+                    structured_content=self._create_error_structured_content(
+                        "Cannot determine target table for archive operation. Please start a new operation.",
+                        region
                     )
-                else:
-                    error_msg = mcp_result.get("error", "Archive operation failed")
-                    return ChatResponse(
-                        response=f"❌ Archive Error - {region.upper()} Region\n\n{error_msg}",
-                        response_type="error",
-                        structured_content=self._create_error_structured_content(error_msg, region)
-                    )
+                )
                     
             elif "CONFIRM DELETE" in message_upper:
-                # Default delete with 30-day safety filter (applied by MCP server)
-                table_name = "dsiactivities"  # Most common case
-                filters = {"confirmed": True}  # Let system apply default 30-day filter
-                
-                mcp_result = await delete_archived_records(table_name, filters, "system")
-                
-                if mcp_result.get("success"):
-                    deleted_count = mcp_result.get("deleted_count", 0)
-                    user_id = user_info.get("username", "admin") if user_info else "admin"
-                    
-                    response = f"🗑️ Delete Operation Completed (Fallback) - {region.upper()} Region\n\n"
-                    response += f"✅ Successfully deleted **{deleted_count:,}** records\n"
-                    response += f"From: {table_name}_archive\n"
-                    response += f"Executed by: {user_id}\n\n"
-                    response += "⚠️ Records have been permanently removed from the archive table.\n"
-                    response += f"🛡️ Applied default safety filter: Archived records older than 30 days"
-                    
-                    structured_content = {
-                        "type": "success_card",
-                        "title": f"Delete Completed (Fallback) - {region.upper()} Region",
-                        "count": deleted_count,
-                        "operation": "delete",
-                        "details": [
-                            f"Successfully deleted **{deleted_count:,}** records",
-                            f"From: {table_name}_archive",
-                            f"Executed by: {user_id}",
-                            "⚠️ Records have been permanently removed",
-                            "🛡️ Applied default safety filter: Archived records older than 30 days"
-                        ]
-                    }
-                    
-                    return ChatResponse(
-                        response=response,
-                        response_type="delete_completed",
-                        structured_content=structured_content,
-                        context={
-                            "operation": "delete",
-                            "deleted_count": deleted_count,
-                            "table": table_name,
-                            "confirmed": True,
-                            "fallback": True
-                        }
+                # CRITICAL FIX: Don't assume activities table - this causes transaction deletes to target wrong table
+                # This fallback should not be used as it can't reliably determine the intended table
+                return ChatResponse(
+                    response="❌ Delete Confirmation Failed\n\nCannot determine which archived table to delete from. Please start a new delete operation by saying something like:\n• 'delete archived transactions older than 60 days'\n• 'delete archived activities older than 60 days'",
+                    response_type="error",
+                    structured_content=self._create_error_structured_content(
+                        "Cannot determine target table for delete operation. Please start a new operation.",
+                        region
                     )
-                else:
-                    error_msg = mcp_result.get("error", "Delete operation failed")
-                    return ChatResponse(
-                        response=f"❌ Delete Error - {region.upper()} Region\n\n{error_msg}",
-                        response_type="error",
-                        structured_content=self._create_error_structured_content(error_msg, region)
-                    )
+                )
             
             return None
             

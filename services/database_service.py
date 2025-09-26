@@ -229,13 +229,8 @@ class DatabaseService:
                     model = table_info['model']
                     time_column = table_info['time_column']
                     
-                    # Total count
-                    if hasattr(model, 'SequenceID'):
-                        total_count = self.db.query(func.count(model.SequenceID)).scalar() or 0
-                    elif hasattr(model, 'RecordID'):
-                        total_count = self.db.query(func.count(model.RecordID)).scalar() or 0
-                    else:
-                        total_count = 0
+                    # Total count - use .count() to count all rows including those with NULL IDs
+                    total_count = self.db.query(model).count()
                     
                     # Count older than 7 days
                     older_than_7_days = 0
@@ -276,13 +271,8 @@ class DatabaseService:
                     model = table_info['model']
                     time_column = table_info['time_column']
                     
-                    # Total count
-                    if hasattr(model, 'SequenceID'):
-                        total_count = self.db.query(func.count(model.SequenceID)).scalar() or 0
-                    elif hasattr(model, 'RecordID'):
-                        total_count = self.db.query(func.count(model.RecordID)).scalar() or 0
-                    else:
-                        total_count = 0
+                    # Total count - use .count() to count all rows including those with NULL IDs
+                    total_count = self.db.query(model).count()
                     
                     # Count older than 30 days
                     older_than_30_days = 0

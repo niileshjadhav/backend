@@ -427,11 +427,11 @@ class CRUDService:
         result = self.db.execute(archive_query, params)
         archived_count = result.rowcount
         
-        # Verify archive operation with database-agnostic query
+        # Verify archive operation with MySQL-compatible query
         verify_query = text(f"""
             SELECT COUNT(*) FROM {archive_table} 
             WHERE archived_by = :verify_user_id 
-            AND archived_at >= datetime('now', '-1 minute')
+            AND archived_at >= DATE_SUB(NOW(), INTERVAL 1 MINUTE)
         """)
         
         try:
