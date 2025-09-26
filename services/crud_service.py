@@ -328,10 +328,10 @@ class CRUDService:
         return {
             "success": True,
             "operation": "DELETE_PREVIEW",
-            "table": f"{operation.table}_archive",
+            "table": operation.table,
             "preview_count": record_count,
             "sample_records": [self._record_to_dict(record) for record in sample_records],
-            "message": f"⚠️ WARNING: {record_count:,} records will be PERMANENTLY DELETED from {operation.table}_archive",
+            "message": f"⚠️ WARNING: {record_count:,} records will be PERMANENTLY DELETED from {operation.table}",
             "filters_applied": operation.filters,
             "safety_warning": "This operation is IRREVERSIBLE. Records will be permanently removed."
         }
