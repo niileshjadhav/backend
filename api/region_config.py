@@ -1,74 +1,25 @@
 """Region configuration management API endpoints"""
-from fastapi import APIRouter, HTTPException, Depends, Header
+from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
-from typing import Optional, List
-from pydantic import BaseModel
+from typing import List, Dict
 
 from database import get_db
 from services.region_config_service import get_region_config_service
-from services.auth_service import AuthService
+from security import get_admin_user
+from schemas import (
+    RegionConfigCreate,
+    RegionConfigUpdate, 
+    RegionConfigResponse,
+    ConnectionTestResponse
+)
 
 router = APIRouter(prefix="/region-config", tags=["region-config"])
-auth_service = AuthService()
-
-# Pydantic schemas for region configuration
-class RegionConfigCreate(BaseModel):
-    region: str
-    host: str
-    port: int
-    username: str
-    password: str
-    database_name: str
-    connection_notes: Optional[str] = None
-
-class RegionConfigUpdate(BaseModel):
-    host: Optional[str] = None
-    port: Optional[int] = None
-    username: Optional[str] = None
-    password: Optional[str] = None
-    database_name: Optional[str] = None
-    is_active: Optional[bool] = None
-    connection_notes: Optional[str] = None
-
-class RegionConfigResponse(BaseModel):
-    id: int
-    region: str
-    host: str
-    port: int
-    username: str
-    database_name: str
-    connection_notes: Optional[str]
-    is_active: bool
-    is_connected: bool
-    last_connected_at: Optional[str]
-    created_at: str
-    updated_at: Optional[str]
-
-    class Config:
-        from_attributes = True
-
-class ConnectionTestResponse(BaseModel):
-    success: bool
-    message: str
-
-def require_admin_auth(authorization: Optional[str] = Header(None)):
-    """Verify admin authentication"""
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Authorization header required")
-    
-    try:
-        user_info = auth_service.verify_token(authorization.replace("Bearer ", ""))
-        if user_info.get("role") != "Admin":
-            raise HTTPException(status_code=403, detail="Admin access required")
-        return user_info
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 @router.post("/", response_model=RegionConfigResponse)
 async def create_region_config(
     config_data: RegionConfigCreate,
     db: Session = Depends(get_db),
-    user_info: dict = Depends(require_admin_auth)
+    admin_user: Dict = Depends(get_admin_user)
 ):
     """Create a new region configuration"""
     try:
@@ -96,13 +47,36 @@ async def create_region_config(
 async def get_region_configs(
     include_inactive: bool = False,
     db: Session = Depends(get_db),
-    user_info: dict = Depends(require_admin_auth)
+    admin_user: Dict = Depends(get_admin_user)
 ):
     """Get all region configurations"""
     try:
         region_config_service = get_region_config_service()
         configs = region_config_service.get_all_region_configs(db, include_inactive)
-        return configs
+        
+        # Add is_connected field by checking region service
+        from services.region_service import get_region_service
+        region_service = get_region_service()
+        
+        result = []
+        for config in configs:
+            config_dict = {
+                "id": config.id,
+                "region": config.region,
+                "host": config.host,
+                "port": config.port,
+                "username": config.username,
+                "database_name": config.database_name,
+                "connection_notes": config.connection_notes,
+                "is_active": config.is_active,
+                "is_connected": region_service.is_connected(config.region),
+                "last_connected_at": config.last_connected_at.isoformat() if config.last_connected_at else None,
+                "created_at": config.created_at.isoformat() if config.created_at else None,
+                "updated_at": config.updated_at.isoformat() if config.updated_at else None,
+            }
+            result.append(config_dict)
+        
+        return result
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get region configurations: {str(e)}")
@@ -111,7 +85,7 @@ async def get_region_configs(
 async def get_region_config(
     region: str,
     db: Session = Depends(get_db),
-    user_info: dict = Depends(require_admin_auth)
+    admin_user: Dict = Depends(get_admin_user)
 ):
     """Get configuration for a specific region"""
     try:
@@ -121,7 +95,26 @@ async def get_region_config(
         if not config:
             raise HTTPException(status_code=404, detail=f"Region {region} not found")
         
-        return config
+        # Add is_connected field by checking region service
+        from services.region_service import get_region_service
+        region_service = get_region_service()
+        
+        result = {
+            "id": config.id,
+            "region": config.region,
+            "host": config.host,
+            "port": config.port,
+            "username": config.username,
+            "database_name": config.database_name,
+            "connection_notes": config.connection_notes,
+            "is_active": config.is_active,
+            "is_connected": region_service.is_connected(config.region),
+            "last_connected_at": config.last_connected_at.isoformat() if config.last_connected_at else None,
+            "created_at": config.created_at.isoformat() if config.created_at else None,
+            "updated_at": config.updated_at.isoformat() if config.updated_at else None,
+        }
+        
+        return result
         
     except HTTPException:
         raise
@@ -133,7 +126,7 @@ async def update_region_config(
     region: str,
     config_data: RegionConfigUpdate,
     db: Session = Depends(get_db),
-    user_info: dict = Depends(require_admin_auth)
+    admin_user: Dict = Depends(get_admin_user)
 ):
     """Update an existing region configuration"""
     try:
@@ -167,7 +160,7 @@ async def update_region_config(
 async def delete_region_config(
     region: str,
     db: Session = Depends(get_db),
-    user_info: dict = Depends(require_admin_auth)
+    admin_user: Dict = Depends(get_admin_user)
 ):
     """Delete a region configuration (soft delete)"""
     try:
@@ -188,7 +181,7 @@ async def delete_region_config(
 async def test_region_connection(
     region: str,
     db: Session = Depends(get_db),
-    user_info: dict = Depends(require_admin_auth)
+    admin_user: Dict = Depends(get_admin_user)
 ):
     """Test database connection for a region"""
     try:

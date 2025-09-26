@@ -1,6 +1,8 @@
 """API schemas"""
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Dict, List, Optional, Any
+from dataclasses import dataclass
+from datetime import datetime
 
 class ChatMessage(BaseModel):
     message: str
@@ -81,3 +83,64 @@ class ConfirmationRequest(BaseModel):
     region: str
     filters: Dict[str, Any]
     confirmed: bool = False
+
+# Region configuration schemas
+class RegionConfigCreate(BaseModel):
+    region: str
+    host: str
+    port: int
+    username: str
+    password: str
+    database_name: str
+    connection_notes: Optional[str] = None
+
+class RegionConfigUpdate(BaseModel):
+    host: Optional[str] = None
+    port: Optional[int] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    database_name: Optional[str] = None
+    is_active: Optional[bool] = None
+    connection_notes: Optional[str] = None
+
+class RegionConfigResponse(BaseModel):
+    id: int
+    region: str
+    host: str
+    port: int
+    username: str
+    database_name: str
+    connection_notes: Optional[str]
+    is_active: bool
+    is_connected: bool
+    last_connected_at: Optional[str]
+    created_at: str
+    updated_at: Optional[str]
+
+    @field_validator('last_connected_at', 'created_at', 'updated_at', mode='before')
+    @classmethod
+    def convert_datetime_to_string(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, datetime):
+            return v.isoformat()
+        return v
+
+    class Config:
+        from_attributes = True
+
+class ConnectionTestResponse(BaseModel):
+    success: bool
+    message: str
+
+# Database operation data structures
+@dataclass
+class ParsedOperation:
+    """Represents a parsed operation from user prompt"""
+    action: str  # SELECT, ARCHIVE, DELETE
+    table: str   # dsiactivities, dsitransactionlog, archivedsiactivities, archivedsitransactionlog
+    filters: Dict[str, str]  # date_start, date_end, agent_name, server_name, etc.
+    is_archive_target: bool  # True if operation targets archive table
+    original_prompt: str
+    confidence: float  # 0.0 to 1.0
+    validation_errors: List[str]

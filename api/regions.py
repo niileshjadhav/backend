@@ -1,12 +1,12 @@
 """Region management API endpoints"""
-from fastapi import APIRouter, HTTPException, Depends, Header
+from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Optional, Dict
 from datetime import datetime
 
 from database import get_db
 from services.region_service import get_region_service
-from services.auth_service import AuthService
+from security import get_current_user_optional, get_current_user_required
 from schemas import (
     RegionConnectionRequest, 
     RegionConnectionResponse, 
@@ -14,11 +14,10 @@ from schemas import (
 )
 
 router = APIRouter(prefix="/regions", tags=["regions"])
-auth_service = AuthService()
 
 @router.get("/status", response_model=RegionStatusResponse)
 async def get_regions_status(
-    authorization: Optional[str] = Header(None)
+    current_user: Optional[Dict] = Depends(get_current_user_optional)
 ):
     """Get status of all regions and available options"""
     try:
@@ -35,7 +34,7 @@ async def get_regions_status(
 @router.post("/connect", response_model=RegionConnectionResponse)
 async def connect_to_region(
     request: RegionConnectionRequest,
-    authorization: Optional[str] = Header(None)
+    current_user: Optional[Dict] = Depends(get_current_user_optional)
 ):
     """Connect to a specific region"""
     try:
@@ -73,7 +72,7 @@ async def connect_to_region(
 @router.post("/disconnect", response_model=RegionConnectionResponse)
 async def disconnect_from_region(
     request: RegionConnectionRequest,
-    authorization: Optional[str] = Header(None)
+    current_user: Optional[Dict] = Depends(get_current_user_optional)
 ):
     """Disconnect from a specific region"""
     try:
@@ -93,17 +92,9 @@ async def disconnect_from_region(
 @router.get("/")
 async def get_available_options(
     db: Session = Depends(get_db),
-    authorization: Optional[str] = Header(None)
+    current_user: Dict = Depends(get_current_user_required)
 ):
     """Get available regions and connection status for UI dropdowns"""
-    # Authentication required but available to all roles
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Authorization header required")
-    
-    try:
-        auth_service.verify_token(authorization.replace("Bearer ", ""))
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
     
     try:
         region_service = get_region_service()

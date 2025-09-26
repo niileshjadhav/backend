@@ -272,7 +272,7 @@ async def _archive_records(
             crud_service = CRUDService(db)
             
             # Create a mock ParsedOperation for the CRUDService
-            from services.prompt_parser import ParsedOperation
+            from schemas import ParsedOperation
             
             # CRITICAL FIX: Ensure the confirmed flag is preserved in filters for proper execution
             if is_confirmed and "confirmed" not in processed_filters:
@@ -404,7 +404,7 @@ async def _delete_archived_records(
             crud_service = CRUDService(db)
             
             # Create a mock ParsedOperation for the CRUDService
-            from services.prompt_parser import ParsedOperation
+            from schemas import ParsedOperation
             
             # For delete operations, we target archive tables
             archive_table_name = f"{table_name}_archive" if not table_name.endswith("_archive") else table_name
@@ -715,7 +715,7 @@ async def _execute_confirmed_archive(
             crud_service = CRUDService(db)
             
             # Create a mock ParsedOperation for the CRUDService
-            from services.prompt_parser import ParsedOperation
+            from schemas import ParsedOperation
             
             mock_operation = ParsedOperation(
                 action="ARCHIVE",
@@ -830,7 +830,7 @@ async def _execute_confirmed_delete(
             crud_service = CRUDService(db)
             
             # Create a mock ParsedOperation for the CRUDService
-            from services.prompt_parser import ParsedOperation
+            from schemas import ParsedOperation
             
             # For delete operations, we target archive tables
             archive_table_name = f"{table_name}_archive" if not table_name.endswith("_archive") else table_name

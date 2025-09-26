@@ -8,7 +8,7 @@ import logging
 from typing import List, Dict, Any
 from .llm_service import OpenAIService
 from .auth_service import AuthService
-from .prompt_parser import ParsedOperation
+from schemas import ParsedOperation
 from .crud_service import CRUDService
 from .region_service import get_region_service
 

@@ -68,7 +68,26 @@ app = FastAPI(
     title="Cloud Inventory Log Management API",
     description="Log Management System with Role-Based Access",
     version="2.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    # Add OpenAPI security scheme for better documentation
+    openapi_tags=[
+        {
+            "name": "authentication",
+            "description": "Authentication and user management operations"
+        },
+        {
+            "name": "chat",
+            "description": "Chat interface for database operations"
+        },
+        {
+            "name": "regions", 
+            "description": "Multi-region database management"
+        },
+        {
+            "name": "region-config",
+            "description": "Region configuration management"
+        }
+    ]
 )
 
 # CORS middleware

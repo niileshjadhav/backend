@@ -1,10 +1,11 @@
 """Chat API - No repetitive code"""
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from database import get_db
 from schemas import ChatMessage, ChatResponse, ConfirmationRequest
 from services.chat_service import ChatService
 from services.region_service import RegionService
+from security import get_current_user_optional, get_current_user_required
 from shared.enums import Region, TableName
 from typing import Optional, Dict, Any
 from datetime import datetime
@@ -15,14 +16,17 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 async def chat_with_agent(
     message: ChatMessage,
     db: Session = Depends(get_db),
-    authorization: Optional[str] = Header(None)
+    current_user: Optional[Dict] = Depends(get_current_user_optional)
 ):
     """Main chat endpoint with region and table support"""
     try:
-        # Extract token from Authorization header
+        # Extract token for chat service (legacy support)
         token = None
-        if authorization and authorization.startswith("Bearer "):
-            token = authorization[7:]
+        if current_user:
+            # Create a simple token representation for the chat service
+            from services.auth_service import AuthService
+            auth_service = AuthService()
+            token = auth_service.create_access_token(current_user)
         
         # Validate region if provided
         if message.region:
@@ -60,17 +64,10 @@ async def chat_with_agent(
 async def confirm_operation(
     confirmation: ConfirmationRequest,
     db: Session = Depends(get_db),
-    authorization: Optional[str] = Header(None)
+    current_user: Dict = Depends(get_current_user_required)
 ):
     """Confirm archive or delete operations with buttons"""
     try:
-        # Extract token from Authorization header
-        token = None
-        if authorization and authorization.startswith("Bearer "):
-            token = authorization[7:]
-        
-        if not token:
-            raise HTTPException(status_code=401, detail="Authentication required for confirmations")
         
         # Validate region connection
         from services.region_service import get_region_service
@@ -83,12 +80,10 @@ async def confirm_operation(
             )
         
         # Import services
-        from services.auth_service import AuthService
         from services.crud_service import CRUDService
-        from services.prompt_parser import ParsedOperation
+        from schemas import ParsedOperation
         
-        auth_service = AuthService()
-        user_info = auth_service.get_user_from_token(token)
+        user_info = current_user
         
         # Get regional database session
         region_db_session = region_service.get_session(confirmation.region)

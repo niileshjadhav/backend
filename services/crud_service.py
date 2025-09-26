@@ -10,7 +10,7 @@ from models import (
     AuditLog
 )
 from services.auth_service import AuthService
-from services.prompt_parser import ParsedOperation
+from schemas import ParsedOperation
 
 logger = logging.getLogger(__name__)
 

@@ -16,7 +16,7 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 class AuthService:
     def __init__(self):
-        self.secret_key = os.getenv("SECRET_KEY")
+        self.secret_key = os.getenv("SECRET_KEY", "your-secret-key-change-in-production-environment")
         self.algorithm = "HS256"
         self.token_expire_minutes = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
     
@@ -28,38 +28,35 @@ class AuthService:
         """Verify a password against its hash"""
         return pwd_context.verify(plain_password, hashed_password)
     
-    def authenticate_user(self, username: str, password: str = None, db: Session = None) -> Optional[Dict]:
+    def authenticate_user(self, username: str, password: str, db: Session = None) -> Optional[Dict]:
         """Authenticate user and return user info with role"""
         try:
             if not db:
                 from database import get_db
                 db = next(get_db())
+            
+            # Password is required for authentication
+            if not password:
+                logger.warning(f"Authentication failed for {username}: No password provided")
+                return None
                 
             user = db.query(User).filter(User.username == username).first()
             
             if not user:
-                # For demo purposes, create default users if they don't exist
-                user = self.create_demo_user(username, db)
-                if not user:
-                    return None
+                logger.warning(f"Authentication failed for {username}: User not found")
+                return None
             
-            # Verify password if provided and user has a password hash
-            if password and user.password_hash:
-                if not self.verify_password(password, user.password_hash):
-                    return None
-            elif password and not user.password_hash:
-                # User exists but no password set - for backward compatibility, allow specific demo passwords
-                expected_passwords = {"admin": "admin@123", "monitor": "monitor@123"}
-                if username.lower() in expected_passwords and password == expected_passwords[username.lower()]:
-                    # Update user with hashed password
-                    user.password_hash = self.hash_password(password)
-                    db.commit()
-                else:
-                    return None
+            # User must have a password hash stored in database
+            if not user.password_hash:
+                logger.warning(f"Authentication failed for {username}: No password hash stored")
+                return None
             
-            # Update last login (skip if columns don't exist)
-            # user.last_login = datetime.utcnow()
-            # db.commit()
+            # Verify password against stored hash
+            if not self.verify_password(password, user.password_hash):
+                logger.warning(f"Authentication failed for {username}: Invalid password")
+                return None
+            
+            logger.info(f"User {username} authenticated successfully")
             
             return {
                 "user_id": user.username,
@@ -70,81 +67,8 @@ class AuthService:
             }
             
         except Exception as e:
-            logger.error(f"Authentication error: {e}")
+            logger.error(f"Authentication error for {username}: {e}")
             return None
-    
-    def create_demo_user(self, username: str, db: Session) -> Optional[User]:
-        """Create user for testing"""
-        try:
-            # Determine role and password based on username
-            if username.lower() == "admin":
-                role = "Admin"
-            elif username.lower() == "monitor":
-                role = "Monitor"
-            else:
-                return None  # Only create admin and monitor users
-            
-            user = User(
-                username=username,
-                role=role
-            )
-            
-            db.add(user)
-            db.commit()
-            db.refresh(user)
-            
-            logger.info(f"Created user: {username} with role: {role}")
-            return user
-            
-        except Exception as e:
-            logger.error(f"Error creating user: {e}")
-            db.rollback()
-            return None
-
-    def create_demo_users(self, db: Session = None) -> List[Dict]:
-        """Create admin and monitor users"""
-        if not db:
-            from database import get_db
-            db = next(get_db())
-            
-        users_created = []
-        demo_users = [
-            {
-                "username": os.getenv("DEFAULT_ADMIN_USERNAME", "admin"), 
-                "password": os.getenv("DEFAULT_ADMIN_PASSWORD", "admin@123"), 
-                "role": "Admin"
-            },
-            {
-                "username": os.getenv("DEFAULT_MONITOR_USERNAME", "monitor"), 
-                "password": os.getenv("DEFAULT_MONITOR_PASSWORD", "monitor@123"), 
-                "role": "Monitor"
-            }
-        ]
-        
-        try:
-            for user_data in demo_users:
-                # Check if user already exists
-                existing = db.query(User).filter(User.username == user_data["username"]).first()
-                if not existing:
-                    user = User(
-                        username=user_data["username"],
-                        role=user_data["role"]
-                    )
-                    db.add(user)
-                    users_created.append(user_data)
-                else:
-                    logger.info(f"User {user_data['username']} already exists")
-            
-            if users_created:
-                db.commit()
-                logger.info(f"Created {len(users_created)} users")
-            
-            return users_created
-            
-        except Exception as e:
-            logger.error(f"Error creating users: {e}")
-            db.rollback()
-            return []
     
     def get_role_permissions(self, role: str) -> Dict[str, bool]:
         """Get permissions for a role"""
@@ -232,3 +156,53 @@ class AuthService:
         except Exception as e:
             logger.error(f"Error fetching users: {e}")
             return []
+    
+    def create_user(self, username: str, password: str, role: str, db: Session) -> Dict:
+        """Create a new user with hashed password"""
+        try:
+            # Check if username already exists
+            existing_user = db.query(User).filter(User.username == username).first()
+            if existing_user:
+                return {
+                    "success": False,
+                    "error": f"Username '{username}' already exists"
+                }
+            
+            # Validate role
+            if role not in ["Admin", "Monitor"]:
+                return {
+                    "success": False,
+                    "error": f"Invalid role '{role}'. Must be 'Admin' or 'Monitor'"
+                }
+            
+            # Hash the password
+            password_hash = self.hash_password(password)
+            
+            # Create new user
+            new_user = User(
+                username=username,
+                password_hash=password_hash,
+                role=role
+            )
+            
+            db.add(new_user)
+            db.commit()
+            db.refresh(new_user)
+            
+            logger.info(f"User '{username}' created successfully with role '{role}'")
+            
+            return {
+                "success": True,
+                "user_id": new_user.id,
+                "username": new_user.username,
+                "role": new_user.role,
+                "created_at": datetime.utcnow().isoformat()
+            }
+            
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error creating user '{username}': {e}")
+            return {
+                "success": False,
+                "error": f"Failed to create user: {str(e)}"
+            }
