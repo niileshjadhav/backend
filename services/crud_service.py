@@ -7,7 +7,7 @@ import logging
 
 from models import (
     DSIActivities, DSITransactionLog, ArchiveDSIActivities, ArchiveDSITransactionLog,
-    AuditLog, ChatOpsLog
+    AuditLog
 )
 from services.auth_service import AuthService
 from services.prompt_parser import ParsedOperation
@@ -54,14 +54,7 @@ class CRUDService:
                 query_with_offset = query_with_offset.limit(limit)
             records = query_with_offset.all()
             
-            # Log the operation
-            await self._log_chat_operation(
-                user_id=user_id,
-                user_role=user_data["role"],
-                operation=operation,
-                records_affected=total_count,
-                status="success"
-            )
+            # Note: Chat operation logging is now handled by ChatService
             
             return {
                 "success": True,
@@ -79,13 +72,7 @@ class CRUDService:
             
         except Exception as e:
             logger.error(f"SELECT operation failed: {e}")
-            await self._log_chat_operation(
-                user_id=user_id,
-                user_role=user_data.get("role", "unknown") if 'user_data' in locals() else "unknown",
-                operation=operation,
-                status="failed",
-                error_message=str(e)
-            )
+            # Note: Chat operation logging is now handled by ChatService
             return {"success": False, "error": str(e)}
     
     async def execute_archive_operation(
@@ -169,14 +156,7 @@ class CRUDService:
                 audit_entry.records_affected = archived_count
                 audit_entry.status = "success"
                 
-                # Log chat operation
-                await self._log_chat_operation(
-                    user_id=user_id,
-                    user_role=user_data["role"],
-                    operation=operation,
-                    records_affected=archived_count,
-                    status="success"
-                )
+                # Note: Chat operation logging is now handled by ChatService
                 
                 self.db.commit()
                 
@@ -286,14 +266,7 @@ class CRUDService:
                 audit_entry.records_affected = deleted_count
                 audit_entry.status = "success"
                 
-                # Log chat operation
-                await self._log_chat_operation(
-                    user_id=user_id,
-                    user_role=user_data["role"],
-                    operation=operation,
-                    records_affected=deleted_count,
-                    status="success"
-                )
+                # Note: Chat operation logging is now handled by ChatService
                 
                 self.db.commit()
                 
@@ -559,35 +532,8 @@ class CRUDService:
             result[column.name] = value
         return result
     
-    async def _log_chat_operation(
-        self, 
-        user_id: str, 
-        user_role: str, 
-        operation: ParsedOperation,
-        records_affected: int = 0,
-        status: str = "success",
-        error_message: Optional[str] = None
-    ):
-        """Log operation to ChatOpsLog"""
-        try:
-            log_entry = ChatOpsLog(
-                session_id=f"crud_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-                user_id=user_id,
-                user_role=user_role,
-                message_type="command",
-                user_message=operation.original_prompt,
-                bot_response=f"Operation {operation.action} completed" if status == "success" else f"Operation failed: {error_message}",
-                operation_type=operation.action,
-                table_name=operation.table,
-                filters_applied=operation.filters,
-                records_affected=records_affected,
-                operation_status=status,
-                error_message=error_message
-            )
-            self.db.add(log_entry)
-            # Don't commit here - let the caller handle transaction management
-        except Exception as e:
-            logger.error(f"Failed to log chat operation: {e}")
+    # Removed excessive logging method - now handled selectively in chat_service
+    # This method was creating too many chatops_log entries
     
     async def get_operation_history(
         self, 

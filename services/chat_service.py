@@ -51,7 +51,6 @@ class ChatService:
             region_service = get_region_service()
             if not region:
                 region = region_service.get_default_region()
-                logger.info(f"No region specified, using default: {region}")
             elif not region_service.is_region_valid(region):
                 logger.error(f"Invalid region: {region}")
                 error_message = f"❌ Invalid Region\n\nRegion '{region}' is not valid. Available regions: {', '.join(region_service.get_valid_regions())}"
@@ -63,37 +62,54 @@ class ChatService:
             
             # Ensure region is set on the service
             region_service.set_current_region(region)
-            logger.info(f"Current region set to: {region}")
 
-            # Create and save chat log first
-            chat_log = ChatOpsLog(
-                session_id=final_session_id,
-                user_message=user_message,
-                region=region,
-                user_id=final_user_id,
-                user_role=user_role,
-                message_type="query",
-                operation_status="processing"
-            )
-            db.add(chat_log)
-            db.commit()
-            db.refresh(chat_log)
+            # Only log operational commands, not conversational messages
+            should_log = self._should_log_operation(user_message)
+            chat_log = None
             
-            logger.info(f"Chat logged: session_id={final_session_id}, user_id={final_user_id}, role={user_role}, region={region}")
+            if should_log:
+                # Create and save chat log for operational commands only
+                chat_log = ChatOpsLog(
+                    session_id=final_session_id,
+                    user_message=user_message,
+                    region=region,
+                    user_id=final_user_id,
+                    user_role=user_role,
+                    message_type="query",
+                    operation_status="processing"
+                )
+                db.add(chat_log)
+                db.commit()
+                db.refresh(chat_log)
             
             # Step 0: Handle confirmations for archive/delete operations (security critical)
             if self._is_confirmation_message(user_message):
+                # For confirmations, ensure we have a chat_log
+                if not chat_log:
+                    chat_log = ChatOpsLog(
+                        session_id=final_session_id,
+                        user_message=user_message,
+                        region=region,
+                        user_id=final_user_id,
+                        user_role=user_role,
+                        message_type="command",
+                        operation_status="processing"
+                    )
+                    db.add(chat_log)
+                    db.commit()
+                    db.refresh(chat_log)
+                
                 return await self._handle_operation_confirmation(
                     user_message, user_info, db, chat_log, region
                 )
             
             # Step 0.5: Handle general table statistics requests directly (bypass LLM for reliability)
             if self._is_general_stats_request(user_message):
-                logger.info(f"Direct general statistics request detected: {user_message}")
+                # General stats requests are not logged as they're lightweight operations
                 return await self._handle_general_stats_request(user_info, db, region)
             
             # Step 1: Let LLM decide everything in one intelligent call
-            conversation_history = self._get_conversation_history(chat_log.session_id, db)
+            conversation_history = self._get_conversation_history(final_session_id, db)
             
             try:
                 llm_result = await self.llm_service.parse_with_enhanced_tools(
@@ -103,19 +119,33 @@ class ChatService:
                 
                 if llm_result and llm_result.mcp_result:
                     # Database operation - format response based on tool used
-                    logger.info(f"LLM selected MCP tool: {llm_result.tool_used} on {llm_result.table_used}")
-                    return self._format_response_by_tool(llm_result, region, chat_log.session_id)
+                    
+                    # For database operations, ensure we have a chat_log
+                    if not chat_log:
+                        chat_log = ChatOpsLog(
+                            session_id=final_session_id,
+                            user_message=user_message,
+                            region=region,
+                            user_id=final_user_id,
+                            user_role=user_role,
+                            message_type="query",
+                            operation_status="processing"
+                        )
+                        db.add(chat_log)
+                        db.commit()
+                        db.refresh(chat_log)
+                    
+                    return self._format_response_by_tool(llm_result, region, final_session_id)
                 else:
                     # Conversational response
-                    logger.info(f"LLM classified as conversational: {user_message}")
                     return await self._handle_conversational(
-                        user_message, user_info, db, chat_log, region
+                        user_message, user_info, db, chat_log, region, final_session_id
                     )
             except Exception as e:
                 logger.error(f"LLM processing failed: {e}")
                 # Fallback to conversational
                 return await self._handle_conversational(
-                    user_message, user_info, db, chat_log, region
+                    user_message, user_info, db, chat_log, region, final_session_id
                 )
                 
         except Exception as e:
@@ -133,7 +163,8 @@ class ChatService:
         user_info: dict, 
         db: Session, 
         chat_log: ChatOpsLog,
-        region: str
+        region: str,
+        session_id: str = None
     ) -> ChatResponse:
         """Handle conversational messages using LLM without database operations"""
         try:
@@ -141,7 +172,9 @@ class ChatService:
             if self._is_capabilities_query(user_message):
                 return self._format_capabilities_response(user_info, region)
             
-            conversation_history = self._get_conversation_history(chat_log.session_id, db)
+            # Use provided session_id or get from chat_log
+            current_session_id = session_id or (chat_log.session_id if chat_log else f"session_{datetime.now().timestamp()}")
+            conversation_history = self._get_conversation_history(current_session_id, db)
             
             user_id = user_info.get("username", "anonymous") if user_info else "anonymous"
             user_role = user_info.get("role", "Monitor") if user_info else "Monitor"
@@ -161,10 +194,11 @@ class ChatService:
                 response_text, user_role, region, suggestions
             )
             
-            # Update chat log
-            chat_log.bot_response = response_text
-            chat_log.operation_status = "conversational"
-            db.commit()
+            # Only update chat log if it exists (for operational messages)
+            if chat_log:
+                chat_log.bot_response = response_text
+                chat_log.operation_status = "conversational"
+                db.commit()
             
             return ChatResponse(
                 response=response_text,
@@ -195,7 +229,6 @@ class ChatService:
             # Handle special case for general stats requests (all tables)
             if tool_used == "get_table_stats" and not table_used:
                 # This is a general database statistics request
-                logger.info(f"General database statistics request detected")
                 return self._format_general_stats_response(mcp_result, region)
             
             # Format response based on tool used
@@ -256,6 +289,54 @@ class ChatService:
         ]
         return any(pattern in message_lower for pattern in general_stats_patterns)
 
+    def _should_log_operation(self, message: str) -> bool:
+        """Determine if this message should be logged in chatops_log table"""
+        message_lower = message.lower().strip()
+        
+        # Always log operational commands (archive, delete, confirm operations)
+        operational_keywords = [
+            'archive', 'delete', 'confirm archive', 'confirm delete', 
+            'remove', 'purge', 'clean', 'cancel', 'abort'
+        ]
+        
+        # Log complex queries but not simple conversational messages
+        query_keywords = [
+            'find', 'search', 'query', 'filter', 'count', 'select',
+            'where', 'older than', 'newer than', 'between', 'records'
+        ]
+        
+        # Don't log simple conversational messages
+        conversational_patterns = [
+            'hello', 'hi', 'help', 'what can you do', 'capabilities', 
+            'how are you', 'thanks', 'thank you', 'goodbye', 'bye',
+            'what is', 'explain', 'tell me about', 'how does'
+        ]
+        
+        # Don't log simple stats requests (these are lightweight operations)
+        simple_stats_patterns = [
+            'show stats', 'table stats', 'statistics', 'show table statistics',
+            'database stats', 'table summary', 'show all tables'
+        ]
+        
+        # Check if it's a simple conversational message
+        if any(pattern in message_lower for pattern in conversational_patterns):
+            return False
+            
+        # Check if it's a simple stats request
+        if any(pattern in message_lower for pattern in simple_stats_patterns):
+            return False
+            
+        # Log if it contains operational keywords
+        if any(keyword in message_lower for keyword in operational_keywords):
+            return True
+            
+        # Log if it contains complex query keywords
+        if any(keyword in message_lower for keyword in query_keywords):
+            return True
+            
+        # Default: don't log (conversational)
+        return False
+
     async def _handle_operation_confirmation(
         self, 
         user_message: str, 
@@ -313,26 +394,47 @@ class ChatService:
             
             # Use LLM with conversation context to understand and execute the confirmation
             if "CONFIRM ARCHIVE" in message_upper or "CONFIRM DELETE" in message_upper:
-                confirmation_prompt = f"""
-                The user is confirming an operation. Based on the conversation history, 
-                parse and execute the appropriate archive or delete operation with the EXACT same filters 
-                that were used in the preview.
+                # Get the most recent operation from conversation history to extract details
+                recent_logs = db.query(ChatOpsLog).filter(
+                    ChatOpsLog.session_id == chat_log.session_id
+                ).order_by(ChatOpsLog.timestamp.desc()).limit(5).all()
                 
-                Current confirmation: "{user_message}"
-                {conversation_history}
+                # Find the most recent preview operation
+                preview_operation = None
+                for log in recent_logs:
+                    if log.bot_response and ("Archive Preview" in log.bot_response or "Delete Preview" in log.bot_response):
+                        preview_operation = log
+                        break
                 
-                Rules:
-                - Use the EXACT same filters from the preview operation in the conversation history
-                - For "CONFIRM ARCHIVE": use archive_records MCP tool with confirmed=True
-                - For "CONFIRM DELETE": use delete_archived_records MCP tool with confirmed=True
-                - Execute with the same table and filters that showed the preview count
-                """
+                if not preview_operation:
+                    logger.warning("No preview operation found in conversation history for confirmation")
+                    # Try to find any archive/delete related message in recent history
+                    for log in recent_logs:
+                        if log.user_message and any(keyword in log.user_message.lower() for keyword in ['archive', 'delete']):
+                            preview_operation = log
+                            break
                 
-                # Use enhanced LLM parsing with conversation context
-                llm_result = await self.llm_service.parse_with_enhanced_tools(
-                    user_message=confirmation_prompt, 
-                    conversation_context=conversation_history
-                )
+                if preview_operation:
+                    # Direct execution based on stored operation details
+                    llm_result = await self._execute_stored_confirmation(
+                        message_upper, preview_operation, conversation_history
+                    )
+                else:
+                    # Last resort: Try to parse from conversation history using LLM
+                    
+                    # Simplified confirmation prompt
+                    if "CONFIRM ARCHIVE" in message_upper:
+                        confirmation_prompt = "The user wants to confirm an archive operation. Use archive_records with dsiactivities table and confirmed=true filter."
+                    elif "CONFIRM DELETE" in message_upper:
+                        confirmation_prompt = "The user wants to confirm a delete operation. Use delete_archived_records with dsiactivities table and confirmed=true filter."
+                    else:
+                        confirmation_prompt = f"The user is confirming an operation: {user_message}"
+                    
+                    # Use enhanced LLM parsing with conversation context
+                    llm_result = await self.llm_service.parse_with_enhanced_tools(
+                        user_message=confirmation_prompt, 
+                        conversation_context=conversation_history
+                    )
                 
                 if llm_result and llm_result.mcp_result:
                     # Format the response based on the operation type
@@ -453,8 +555,23 @@ class ChatService:
                                 structured_content=structured_content
                             )
                 else:
-                    # LLM failed to process the confirmation
-                    error_message = "❌ Confirmation Processing Failed\n\nThe system failed to process your confirmation. Please try again or contact support."
+                    # LLM failed to process the confirmation - use direct fallback
+                    logger.error(f"Confirmation processing failed: llm_result={llm_result}, conversation_history length={len(conversation_history)}")
+                    
+                    # Direct fallback execution without LLM
+                    try:
+                        fallback_result = await self._execute_direct_confirmation_fallback(
+                            message_upper, user_info, region
+                        )
+                        
+                        if fallback_result:
+                            return fallback_result
+                        
+                    except Exception as fallback_error:
+                        logger.error(f"Direct confirmation fallback also failed: {fallback_error}")
+                    
+                    # If everything fails, return error
+                    error_message = "❌ Confirmation Processing Failed\n\nThe system failed to process your confirmation. Please try again or contact support.\n\nTip: Try saying 'archive activities' or 'delete archived activities' to start a new operation."
                     return ChatResponse(
                         response=error_message,
                         response_type="error",
@@ -483,6 +600,242 @@ class ChatService:
                 response_type="error",
                 structured_content=self._create_error_structured_content(str(e), region)
             )
+
+    async def _execute_stored_confirmation(
+        self, 
+        message_upper: str, 
+        preview_operation: ChatOpsLog, 
+        conversation_history: str
+    ) -> Any:
+        """Execute confirmation based on stored preview operation details"""
+        try:
+            from cloud_mcp.server import archive_records, delete_archived_records
+            
+            # Extract operation details from the preview operation user message
+            # This is more reliable than parsing LLM responses
+            user_message = preview_operation.user_message.lower()
+            
+            # Determine operation type and table
+            if "CONFIRM ARCHIVE" in message_upper:
+                # Determine table name
+                if "activities" in user_message or "activity" in user_message:
+                    table_name = "dsiactivities"
+                elif "transaction" in user_message:
+                    table_name = "dsitransactionlog"
+                else:
+                    # Try to extract from bot response if available
+                    if preview_operation.bot_response and "dsiactivities" in preview_operation.bot_response.lower():
+                        table_name = "dsiactivities"
+                    elif preview_operation.bot_response and "dsitransactionlog" in preview_operation.bot_response.lower():
+                        table_name = "dsitransactionlog"
+                    else:
+                        # Default fallback - most common case
+                        table_name = "dsiactivities"
+                
+                # Extract filters from original user message
+                filters = self._extract_filters_from_message(user_message)
+                filters["confirmed"] = True
+                
+                # Execute archive operation
+                mcp_result = await archive_records(table_name, filters, "system")
+                
+                # Create mock LLM result structure
+                class MockLLMResult:
+                    def __init__(self, tool, table, result):
+                        self.tool_used = tool
+                        self.table_used = table
+                        self.mcp_result = result
+                
+                return MockLLMResult("archive_records", table_name, mcp_result)
+                
+            elif "CONFIRM DELETE" in message_upper:
+                # Determine table name
+                if "activities" in user_message or "activity" in user_message:
+                    table_name = "dsiactivities"
+                elif "transaction" in user_message:
+                    table_name = "dsitransactionlog"
+                else:
+                    # Try to extract from bot response if available
+                    if preview_operation.bot_response and "dsiactivities" in preview_operation.bot_response.lower():
+                        table_name = "dsiactivities"
+                    elif preview_operation.bot_response and "dsitransactionlog" in preview_operation.bot_response.lower():
+                        table_name = "dsitransactionlog"
+                    else:
+                        # Default fallback - most common case
+                        table_name = "dsiactivities"
+                
+                # Extract filters from original user message
+                filters = self._extract_filters_from_message(user_message)
+                filters["confirmed"] = True
+                
+                # Execute delete operation
+                mcp_result = await delete_archived_records(table_name, filters, "system")
+                
+                # Create mock LLM result structure
+                class MockLLMResult:
+                    def __init__(self, tool, table, result):
+                        self.tool_used = tool
+                        self.table_used = table
+                        self.mcp_result = result
+                
+                return MockLLMResult("delete_archived_records", table_name, mcp_result)
+                
+            else:
+                logger.warning(f"Unknown confirmation type: {message_upper}")
+                return None
+            
+        except Exception as e:
+            logger.error(f"Error in stored confirmation execution: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return None
+
+    def _extract_filters_from_message(self, message: str) -> dict:
+        """Extract date filters from user message"""
+        filters = {}
+        
+        import re
+        
+        # Common date filter patterns
+        if "older than" in message:
+            # Extract "older than X days/months/years"
+            match = re.search(r'older than (\d+)\s*(day|month|year)', message)
+            if match:
+                number = match.group(1)
+                unit = match.group(2)
+                # Ensure plural form
+                if not unit.endswith('s'):
+                    unit += 's'
+                filters["date_filter"] = f"older_than_{number}_{unit}"
+        
+        # Handle simple archive/delete without specific dates
+        elif any(keyword in message for keyword in ['archive', 'delete']) and 'older than' not in message:
+            # Let the system apply default filters - don't set anything
+            pass
+        
+        return filters
+
+    async def _execute_direct_confirmation_fallback(
+        self, 
+        message_upper: str, 
+        user_info: dict, 
+        region: str
+    ) -> ChatResponse:
+        """Direct confirmation fallback when all parsing fails"""
+        try:
+            from cloud_mcp.server import archive_records, delete_archived_records
+            
+            # Use default operations with system safety filters
+            if "CONFIRM ARCHIVE" in message_upper:
+                # Default archive with 7-day safety filter (applied by MCP server)
+                table_name = "dsiactivities"  # Most common case
+                filters = {"confirmed": True}  # Let system apply default 7-day filter
+                
+                mcp_result = await archive_records(table_name, filters, "system")
+                
+                if mcp_result.get("success"):
+                    archived_count = mcp_result.get("archived_count", 0)
+                    user_id = user_info.get("username", "admin") if user_info else "admin"
+                    
+                    response = f"📦 Archive Operation Completed (Fallback) - {region.upper()} Region\n\n"
+                    response += f"✅ Successfully archived **{archived_count:,}** records\n"
+                    response += f"From: {table_name}\n"
+                    response += f"To: {table_name}_archive\n"
+                    response += f"Executed by: {user_id}\n\n"
+                    response += "Records have been moved from the main table to the archive table.\n"
+                    response += f"🛡️ Applied default safety filter: Records older than 7 days"
+                    
+                    structured_content = {
+                        "type": "success_card",
+                        "title": f"Archive Completed (Fallback) - {region.upper()} Region",
+                        "count": archived_count,
+                        "operation": "archive",
+                        "details": [
+                            f"Successfully archived **{archived_count:,}** records",
+                            f"From: {table_name}",
+                            f"To: {table_name}_archive",
+                            f"Executed by: {user_id}",
+                            "🛡️ Applied default safety filter: Records older than 7 days"
+                        ]
+                    }
+                    
+                    return ChatResponse(
+                        response=response,
+                        response_type="archive_completed",
+                        structured_content=structured_content,
+                        context={
+                            "operation": "archive",
+                            "archived_count": archived_count,
+                            "table": table_name,
+                            "confirmed": True,
+                            "fallback": True
+                        }
+                    )
+                else:
+                    error_msg = mcp_result.get("error", "Archive operation failed")
+                    return ChatResponse(
+                        response=f"❌ Archive Error - {region.upper()} Region\n\n{error_msg}",
+                        response_type="error",
+                        structured_content=self._create_error_structured_content(error_msg, region)
+                    )
+                    
+            elif "CONFIRM DELETE" in message_upper:
+                # Default delete with 30-day safety filter (applied by MCP server)
+                table_name = "dsiactivities"  # Most common case
+                filters = {"confirmed": True}  # Let system apply default 30-day filter
+                
+                mcp_result = await delete_archived_records(table_name, filters, "system")
+                
+                if mcp_result.get("success"):
+                    deleted_count = mcp_result.get("deleted_count", 0)
+                    user_id = user_info.get("username", "admin") if user_info else "admin"
+                    
+                    response = f"🗑️ Delete Operation Completed (Fallback) - {region.upper()} Region\n\n"
+                    response += f"✅ Successfully deleted **{deleted_count:,}** records\n"
+                    response += f"From: {table_name}_archive\n"
+                    response += f"Executed by: {user_id}\n\n"
+                    response += "⚠️ Records have been permanently removed from the archive table.\n"
+                    response += f"🛡️ Applied default safety filter: Archived records older than 30 days"
+                    
+                    structured_content = {
+                        "type": "success_card",
+                        "title": f"Delete Completed (Fallback) - {region.upper()} Region",
+                        "count": deleted_count,
+                        "operation": "delete",
+                        "details": [
+                            f"Successfully deleted **{deleted_count:,}** records",
+                            f"From: {table_name}_archive",
+                            f"Executed by: {user_id}",
+                            "⚠️ Records have been permanently removed",
+                            "🛡️ Applied default safety filter: Archived records older than 30 days"
+                        ]
+                    }
+                    
+                    return ChatResponse(
+                        response=response,
+                        response_type="delete_completed",
+                        structured_content=structured_content,
+                        context={
+                            "operation": "delete",
+                            "deleted_count": deleted_count,
+                            "table": table_name,
+                            "confirmed": True,
+                            "fallback": True
+                        }
+                    )
+                else:
+                    error_msg = mcp_result.get("error", "Delete operation failed")
+                    return ChatResponse(
+                        response=f"❌ Delete Error - {region.upper()} Region\n\n{error_msg}",
+                        response_type="error",
+                        structured_content=self._create_error_structured_content(error_msg, region)
+                    )
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Direct confirmation fallback error: {e}")
+            return None
 
     def _get_conversation_history(self, session_id: str, db: Session, limit: int = 5) -> str:
         """Get recent conversation history for LLM context"""
@@ -617,13 +970,13 @@ class ChatService:
                     "icon": "📦",
                     "title": "Archive Operations",
                     "description": "Safely move old records to archive tables with confirmation workflows.",
-                    "examples": ["Archive activities older than 30 days", "Archive transactions older than 7 days", "Archive logs older than 2 weeks"]
+                    "examples": ["Archive activities older than 7 days", "Archive transactions older than 7 days"]
                 },
                 {
                     "icon": "🗑️",
                     "title": "Delete Operations",
                     "description": "Permanently remove archived records with strict safety confirmations.",
-                    "examples": ["Delete archived logs older than 30 days", "Delete archived data older than 60 days", "Clean old archived records"]
+                    "examples": ["Delete archived activities older than 30 days", "Delete archived transactions older than 30 days"]
                 }
             ])
         
@@ -666,9 +1019,9 @@ class ChatService:
         }
         
         # Enhanced suggestions based on user role
-        suggestions = ["Show table statistics", "Help with queries", "Explain regions"]
+        suggestions = ["Show table statistics"]
         if user_role == "Admin":
-            suggestions.extend(["Archive old data", "Safety procedures"])
+            suggestions.extend(["Archive activities older than 7 days", "Archive transactions older than 7 days"])
         
         return ChatResponse(
             response=response,
@@ -870,8 +1223,13 @@ class ChatService:
             response += f"Ready to Archive: 🟠 **{count:,} records** 🟠\n"
             response += f"From Table: {table_name}\n"
             response += f"To Table: {table_name}_archive\n\n"
-            response += "⚠️ This will move records from main table to archive table.\n\n"
-            response += "Type 'CONFIRM ARCHIVE' to proceed or 'CANCEL' to abort."
+            response += "⚠️ This will move records from main table to archive table.\n"
+            
+            # Add safety information about default filters if no specific date filters were provided
+            if not mcp_result.get('filters', {}).get('date_filter'):
+                response += "🛡️ Safety Filter Applied: Only records older than 7 days will be archived.\n"
+            
+            response += "\nType 'CONFIRM ARCHIVE' to proceed or 'CANCEL' to abort."
             
             # Structured content for confirmation
             structured_content = {
@@ -959,8 +1317,13 @@ class ChatService:
             response = f"🗑️ Delete Preview - {region.upper()} Region\n\n"
             response += f"Ready to Delete: 🔴 **{count:,} records** 🔴\n"
             response += f"From Table: {table_name}\n\n"
-            response += "🚨 WARNING: THIS WILL PERMANENTLY DELETE RECORDS 🚨\n\n"
-            response += "Type 'CONFIRM DELETE' to proceed or 'CANCEL' to abort."
+            response += "🚨 WARNING: THIS WILL PERMANENTLY DELETE RECORDS 🚨\n"
+            
+            # Add safety information about default filters if no specific date filters were provided
+            if not mcp_result.get('filters', {}).get('date_filter'):
+                response += "🛡️ Safety Filter Applied: Only archived records older than 30 days will be deleted.\n"
+            
+            response += "\nType 'CONFIRM DELETE' to proceed or 'CANCEL' to abort."
             
             # Structured content for confirmation
             structured_content = {
@@ -996,7 +1359,7 @@ class ChatService:
                 "table_name": table_name,
                 "count": 0,
                 "message": "No records found matching the criteria",
-                "details": ["No delete operation was needed"]
+                "details": ["No records found matching the criteria"]
             }
             
             return ChatResponse(

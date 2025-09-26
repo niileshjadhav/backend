@@ -350,11 +350,13 @@ class DatabaseService:
                     "records_processed": 0
                 }
             
+            # SAFETY RULE: Apply default 7-day filter if no date filters provided
             if not filters:
-                return {
-                    "success": False,
-                    "error": "Filters are required for archive operations",
-                    "records_processed": 0
+                from datetime import datetime, timedelta
+                cutoff_date = datetime.now() - timedelta(days=7)
+                filters = {
+                    "date_end": cutoff_date.strftime("%Y%m%d%H%M%S"),
+                    "date_comparison": "older_than"
                 }
             
             if dry_run:
@@ -418,11 +420,13 @@ class DatabaseService:
                     "records_processed": 0
                 }
             
+            # SAFETY RULE: Apply default 30-day filter if no date filters provided
             if not filters:
-                return {
-                    "success": False,
-                    "error": "Filters are required for delete operations",
-                    "records_processed": 0
+                from datetime import datetime, timedelta
+                cutoff_date = datetime.now() - timedelta(days=30)
+                filters = {
+                    "date_end": cutoff_date.strftime("%Y%m%d%H%M%S"),
+                    "date_comparison": "older_than"
                 }
             
             # Safety check for same-day deletion

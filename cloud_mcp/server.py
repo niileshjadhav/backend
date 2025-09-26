@@ -51,8 +51,7 @@ def format_database_date(date_str: str) -> str:
         # Return as-is if we can't parse it
         return str(date_str)
         
-    except (ValueError, TypeError, IndexError) as e:
-        logger.warning(f"Could not parse date string '{date_str}': {e}")
+    except (ValueError, TypeError, IndexError):
         return str(date_str) if date_str else None
 
 logger = logging.getLogger(__name__)
@@ -115,7 +114,7 @@ async def _query_logs(
                                 cutoff_date = current_date - timedelta(days=number * 365)
                                 filter_description = f"older than {number} years"
                         except ValueError:
-                            logger.warning(f"Could not parse date filter: {date_filter}")
+                            pass  # Skip invalid date filter
                 
                 elif date_filter == "yesterday":
                     cutoff_date = current_date - timedelta(days=1)
@@ -205,6 +204,10 @@ async def _archive_records(
         # Check if this is a confirmed operation
         is_confirmed = processed_filters.pop("confirmed", False)
         
+        # SAFETY RULE: Apply default 7-day filter for archive operations if no date filter provided
+        if "date_filter" not in processed_filters and "date_end" not in processed_filters:
+            processed_filters["date_filter"] = "older_than_7_days"
+        
         if "date_filter" in processed_filters:
             date_filter = processed_filters.pop("date_filter")  # Remove date_filter
             current_date = datetime.now()
@@ -236,7 +239,7 @@ async def _archive_records(
                         elif unit.startswith("year"):
                             cutoff_date = current_date - timedelta(days=number * 365)
                     except ValueError:
-                        logger.warning(f"Could not parse date filter: {date_filter}")
+                        pass  # Skip invalid date filter
             
             elif date_filter == "yesterday":
                 # SAFETY CHECK: Yesterday is less than 7 days old 
@@ -329,6 +332,10 @@ async def _delete_archived_records(
         # Check if this is a confirmed operation
         is_confirmed = processed_filters.pop("confirmed", False)
         
+        # SAFETY RULE: Apply default 30-day filter for delete operations if no date filter provided
+        if "date_filter" not in processed_filters and "date_end" not in processed_filters:
+            processed_filters["date_filter"] = "older_than_30_days"
+        
         if "date_filter" in processed_filters:
             date_filter = processed_filters.pop("date_filter")  # Remove date_filter
             current_date = datetime.now()
@@ -360,7 +367,7 @@ async def _delete_archived_records(
                         elif unit.startswith("year"):
                             cutoff_date = current_date - timedelta(days=number * 365)
                     except ValueError:
-                        logger.warning(f"Could not parse date filter: {date_filter}")
+                        pass  # Skip invalid date filter
             
             elif date_filter == "yesterday":
                 # SAFETY CHECK: Yesterday is much less than 30 days old 
@@ -505,7 +512,7 @@ async def _get_table_stats(
                                 cutoff_date = current_date - timedelta(days=number * 365)
                                 filter_description = f"older than {number} years"
                         except ValueError:
-                            logger.warning(f"Could not parse date filter: {date_filter}")
+                            pass  # Skip invalid date filter
                 
                 elif date_filter == "yesterday":
                     cutoff_date = current_date - timedelta(days=1)
@@ -672,7 +679,7 @@ async def _execute_confirmed_archive(
                         elif unit.startswith("year"):
                             cutoff_date = current_date - timedelta(days=number * 365)
                     except ValueError:
-                        logger.warning(f"Could not parse date filter: {date_filter}")
+                        pass  # Skip invalid date filter
             
             elif date_filter == "yesterday":
                 # SAFETY CHECK: Yesterday is less than 7 days old 
@@ -787,7 +794,7 @@ async def _execute_confirmed_delete(
                         elif unit.startswith("year"):
                             cutoff_date = current_date - timedelta(days=number * 365)
                     except ValueError:
-                        logger.warning(f"Could not parse date filter: {date_filter}")
+                        pass  # Skip invalid date filter
             
             elif date_filter == "yesterday":
                 # SAFETY CHECK: Yesterday is much less than 30 days old 

@@ -56,7 +56,7 @@ class RegionService:
         """Set the current region (for logging/tracking purposes)"""
         if self.is_region_valid(region):
             # Just log the current region, no need to store state
-            logger.info(f"Current region context: {region}")
+            pass
         else:
             logger.warning(f"Attempted to set invalid region: {region}")
     
@@ -85,7 +85,6 @@ class RegionService:
                     self.session_makers[region_enum] = sessionmaker(bind=engine)
                     self.connection_status[region_enum] = True
                     
-                    logger.info(f"Successfully connected to region: {region}")
                     return True, f"Connected to {region} region successfully"
                 
         except Exception as e:
@@ -105,7 +104,6 @@ class RegionService:
                 
             self.connection_status[region_enum] = False
             
-            logger.info(f"Disconnected from region: {region}")
             return True, f"Disconnected from {region} region successfully"
             
         except Exception as e:

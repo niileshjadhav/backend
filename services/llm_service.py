@@ -29,7 +29,7 @@ class OpenAIService:
             raise ValueError("OpenAI API key is required")
 
         try:
-            logger.info(f"OpenAI service initialized with model: {self.model_name}")
+            pass  # Service initialized successfully
         except Exception as e:
             logger.error(f"Failed to initialize OpenAI service: {e}")
             raise
@@ -441,8 +441,6 @@ class OpenAIService:
             data = response.json()
             result_text = data["choices"][0]["message"]["content"].strip().upper() if data["choices"] else ""
             
-            logger.info(f"Intent classification for '{user_message}': {result_text}")
-            
             class IntentResult:
                 def __init__(self, is_database_op):
                     self.is_database_operation = is_database_op
@@ -501,6 +499,11 @@ class OpenAIService:
             - Add "confirmed":true to the filters
             - Use archive_records for "CONFIRM ARCHIVE" or delete_archived_records for "CONFIRM DELETE"
 
+            SAFETY RULES - CRITICAL:
+            🛡️ Archive operations without date filters → System applies default 7-day minimum age filter
+            🛡️ Delete operations without date filters → System applies default 30-day minimum age filter
+            🛡️ These defaults prevent accidental processing of ALL records
+            
             Key Analysis Rules:
             ✅ COUNT/HOW MANY/STATISTICS queries → ALWAYS use get_table_stats
             ✅ SHOW/LIST/VIEW/DISPLAY queries → ALWAYS use query_logs
@@ -525,6 +528,16 @@ class OpenAIService:
             "archive activities older than 12 months"
             → Analysis: ARCHIVE operation + date filter + main table
             → MCP_TOOL: archive_records dsiactivities {{"date_filter": "older_than_12_months"}}
+
+            "archive activities" (no date specified)
+            → Analysis: ARCHIVE operation + no date filter specified + main table
+            → MCP_TOOL: archive_records dsiactivities {{}}
+            → Note: System will automatically apply default 7-day safety filter
+
+            "delete archived activities" (no date specified)
+            → Analysis: DELETE operation + no date filter specified + archive table
+            → MCP_TOOL: delete_archived_records dsiactivities {{}}
+            → Note: System will automatically apply default 30-day safety filter
 
             "CONFIRM ARCHIVE" (after showing 3 records older than 12 months)
             → Analysis: CONFIRMATION of archive + use same filters from context + add confirmed flag
@@ -556,11 +569,13 @@ class OpenAIService:
             if "MCP_TOOL:" in result_text:
                 return await self._parse_enhanced_mcp_response(result_text, user_message)
             else:
-                logger.warning(f"Enhanced LLM did not return MCP_TOOL format: {result_text}")
+                logger.warning(f"Enhanced LLM did not return MCP_TOOL format for message '{user_message}'. LLM response: '{result_text}'")
                 return None
                 
         except Exception as e:
-            logger.error(f"Enhanced LLM parsing failed: {e}")
+            logger.error(f"Enhanced LLM parsing failed for message '{user_message}': {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return None
 
     async def _parse_enhanced_mcp_response(self, llm_response: str, original_message: str) -> Optional[Any]:
@@ -574,7 +589,7 @@ class OpenAIService:
                     break
             
             if not mcp_line:
-                logger.error(f"No MCP_TOOL line found in response: {llm_response}")
+                logger.error(f"No MCP_TOOL line found in LLM response. Full response: '{llm_response}'. Original message: '{original_message}'")
                 return None
             
             # Parse the MCP_TOOL line: "MCP_TOOL: [tool_name] [table_name] [filters_json]"
