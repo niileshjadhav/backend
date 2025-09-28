@@ -20,61 +20,7 @@ class CRUDService:
     def __init__(self, db_session: Session):
         self.db = db_session
         self.auth_service = AuthService()
-    
-    async def execute_select_operation(
-        self, 
-        operation: ParsedOperation, 
-        user_id: str,
-        user_role: str = "Monitor",
-        limit: Optional[int] = None,
-        offset: int = 0
-    ) -> Dict[str, Any]:
-        """Execute SELECT operation with pagination"""
-        try:
-            # Verify permissions using provided user_role
-            if not self.auth_service.check_permission(user_role, "SELECT"):
-                return {"success": False, "error": "Permission denied"}
-            
-            user_data = {"user_id": user_id, "role": user_role}
-            
-            # Get model classes
-            main_model, archive_model = self._get_model_classes(operation.table)
-            target_model = archive_model if operation.is_archive_target else main_model
-            
-            # Build query
-            query = self.db.query(target_model)
-            query = self._apply_filters(query, operation, target_model)
-            
-            # Get total count
-            total_count = query.count()
-            
-            # Get paginated results
-            query_with_offset = query.offset(offset)
-            if limit is not None:
-                query_with_offset = query_with_offset.limit(limit)
-            records = query_with_offset.all()
-            
-            # Note: Chat operation logging is now handled by ChatService
-            
-            return {
-                "success": True,
-                "operation": "SELECT",
-                "table": f"{operation.table}{'_archive' if operation.is_archive_target else ''}",
-                "total_records": total_count,
-                "returned_records": len(records),
-                "records": [self._record_to_dict(record) for record in records],
-                "pagination": {
-                    "limit": limit,
-                    "offset": offset,
-                    "has_more": offset + limit < total_count
-                }
-            }
-            
-        except Exception as e:
-            logger.error(f"SELECT operation failed: {e}")
-            # Note: Chat operation logging is now handled by ChatService
-            return {"success": False, "error": str(e)}
-    
+      
     async def execute_archive_operation(
         self, 
         operation: ParsedOperation, 
@@ -531,54 +477,3 @@ class CRUDService:
                 value = value.isoformat()
             result[column.name] = value
         return result
-    
-    # Removed excessive logging method - now handled selectively in chat_service
-    # This method was creating too many chatops_log entries
-    
-    async def get_operation_history(
-        self, 
-        user_id: Optional[str] = None, 
-        operation_type: Optional[str] = None,
-        days: int = 7,
-        limit: int = 50
-    ) -> List[Dict]:
-        """Get operation history from audit logs"""
-        try:
-            query = self.db.query(AuditLog)
-            
-            # Apply filters
-            if user_id:
-                query = query.filter(AuditLog.user_id == user_id)
-            
-            if operation_type:
-                query = query.filter(AuditLog.operation_type == operation_type)
-            
-            # Date filter
-            since_date = datetime.now() - timedelta(days=days)
-            query = query.filter(AuditLog.operation_date >= since_date)
-            
-            # Order and limit
-            query = query.order_by(AuditLog.operation_date.desc()).limit(limit)
-            
-            records = query.all()
-            
-            return [
-                {
-                    "id": record.id,
-                    "operation_type": record.operation_type,
-                    "table_name": record.table_name,
-                    "user_id": record.user_id,
-                    "operation_date": record.operation_date.isoformat(),
-                    "records_affected": record.records_affected,
-                    "status": record.status,
-                    "error_message": record.error_message,
-                    "date_range_start": record.date_range_start,
-                    "date_range_end": record.date_range_end,
-                    "operation_details": record.operation_details
-                }
-                for record in records
-            ]
-            
-        except Exception as e:
-            logger.error(f"Error fetching operation history: {e}")
-            return []

@@ -479,13 +479,7 @@ async def _get_table_stats(
             
             model = model_map[table_name]
             base_query = db.query(model)
-            
-            # # Get total count (unfiltered) first
-            # if hasattr(model, 'SequenceID'):
-            #     total_count = base_query.with_entities(func.count(model.SequenceID)).scalar()
-            # elif hasattr(model, 'RecordID'):
-            #     total_count = base_query.with_entities(func.count(model.RecordID)).scalar()
-            # else:
+        
             total_count = base_query.count()
             
             # Start with the base query for filtering
@@ -541,8 +535,6 @@ async def _get_table_stats(
                         elif hasattr(model, 'WhenReceived'):
                             # Transaction tables use WhenReceived
                             query = query.filter(model.WhenReceived >= cutoff_string)
-                        elif hasattr(model, 'EndDateTime'):
-                            query = query.filter(model.EndDateTime >= cutoff_string)
                     else:
                         # Older records: date field < cutoff_string
                         if hasattr(model, 'PostedTime'):
@@ -551,8 +543,6 @@ async def _get_table_stats(
                         elif hasattr(model, 'WhenReceived'):
                             # Transaction tables use WhenReceived
                             query = query.filter(model.WhenReceived < cutoff_string)
-                        elif hasattr(model, 'EndDateTime'):
-                            query = query.filter(model.EndDateTime < cutoff_string)
                     
                     # Get filtered count after applying the filter - use .count() to include all rows
                     filtered_count = query.count()
@@ -574,9 +564,6 @@ async def _get_table_stats(
                 # Transaction table uses WhenReceived
                 latest_date = date_query.with_entities(func.max(model.WhenReceived)).scalar()
                 earliest_date = date_query.with_entities(func.min(model.WhenReceived)).scalar()
-            elif hasattr(model, 'EndDateTime'):
-                latest_date = date_query.with_entities(func.max(model.EndDateTime)).scalar()
-                earliest_date = date_query.with_entities(func.min(model.EndDateTime)).scalar()
             
             # Build response based on whether filters were applied
             if filters and "date_filter" in filters:
@@ -916,7 +903,6 @@ async def mcp_health_check() -> Dict[str, Any]:
     """Health check for the MCP server"""
     return await _health_check()
 
-# Export the internal functions for backward compatibility with existing code
 query_logs = _query_logs
 archive_records = _archive_records  
 delete_archived_records = _delete_archived_records

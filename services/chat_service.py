@@ -118,8 +118,6 @@ class ChatService:
                 )
                 
                 if llm_result and llm_result.mcp_result:
-                    # Database operation - format response based on tool used
-                    
                     # For database operations, ensure we have a chat_log
                     if not chat_log:
                         chat_log = ChatOpsLog(
@@ -135,7 +133,7 @@ class ChatService:
                         db.commit()
                         db.refresh(chat_log)
                     
-                    # CRITICAL FIX: Store table name and operation type so confirmation process can find it later
+                    # CRITICAL : Store table name and operation type so confirmation process can find it later
                     if chat_log:
                         chat_log.operation_type = llm_result.tool_used.upper() if llm_result.tool_used else None
                         chat_log.table_name = llm_result.table_used if hasattr(llm_result, 'table_used') else None
@@ -144,7 +142,7 @@ class ChatService:
                     # Format the response
                     formatted_response = self._format_response_by_tool(llm_result, region, final_session_id)
                     
-                    # CRITICAL FIX: Update ChatOpsLog with the formatted bot response so confirmation can find preview operations
+                    # CRITICAL : Update ChatOpsLog with the formatted bot response so confirmation can find preview operations
                     if chat_log and formatted_response:
                         chat_log.bot_response = formatted_response.response
                         db.commit()
@@ -164,7 +162,7 @@ class ChatService:
                 
         except Exception as e:
             logger.error(f"Error in process_chat: {e}")
-            error_message = f"❌ System Error: {str(e)}\n\nPlease contact your administrator if this problem persists."
+            error_message = f"❌ System Error: {str(e)}\n\nThere is an issue in processing chat."
             return ChatResponse(
                 response=error_message,
                 response_type="error",
@@ -201,8 +199,8 @@ class ChatService:
             )
             
             response_text = llm_response.get("response", "I'm here to help with your Cloud Inventory log management questions!")
-            suggestions = llm_response.get("suggestions", ["Show table statistics", "Explain safety rules"])
-            
+            suggestions = ["Show table statistics", "Explain safety rules"]
+
             # Create structured content for conversational responses
             structured_content = self._create_conversational_structured_content(
                 response_text, user_role, region, suggestions
@@ -293,8 +291,8 @@ class ChatService:
         """Check if message is a confirmation for archive/delete operations"""
         message_upper = message.upper().strip()
         confirmation_patterns = [
-            'CONFIRM ARCHIVE', 'CONFIRM DELETE', 'YES', 'PROCEED', 'EXECUTE',
-            'CANCEL', 'ABORT', 'NO'
+            'CONFIRM ARCHIVE', 'CONFIRM DELETE', 'YES', 'PROCEED', 'SURE', 'GO AHEAD', 'EXECUTE',
+            'CANCEL', 'ABORT', 'DONT', 'NO'
         ]
         return any(pattern in message_upper for pattern in confirmation_patterns)
 
@@ -612,12 +610,12 @@ class ChatService:
                         logger.error(f"Direct confirmation fallback also failed: {fallback_error}")
                     
                     # If everything fails, return error
-                    error_message = "❌ Confirmation Processing Failed\n\nThe system failed to process your confirmation. Please try again or contact support.\n\nTip: Try saying 'archive activities' or 'delete archived activities' to start a new operation."
+                    error_message = "❌ Confirmation Processing Failed\n\nThe system failed to process your confirmation. Please try again.\n\nTip: Try saying 'archive activities' or 'delete archived activities' to start a new operation."
                     return ChatResponse(
                         response=error_message,
                         response_type="error",
                         structured_content=self._create_error_structured_content(
-                            "The system failed to process your confirmation. Please try again or contact support.",
+                            "The system failed to process your confirmation. Please try again.",
                             region
                         )
                     )
@@ -776,7 +774,6 @@ class ChatService:
             
             # Use default operations with system safety filters
             if "CONFIRM ARCHIVE" in message_upper:
-                # CRITICAL FIX: Don't assume activities table - this causes transaction archives to target wrong table
                 # This fallback should not be used as it can't reliably determine the intended table
                 return ChatResponse(
                     response="❌ Archive Confirmation Failed\n\nCannot determine which table to archive. Please start a new archive operation by saying something like:\n• 'archive transactions older than 30 days'\n• 'archive activities older than 30 days'",
@@ -788,7 +785,6 @@ class ChatService:
                 )
                     
             elif "CONFIRM DELETE" in message_upper:
-                # CRITICAL FIX: Don't assume activities table - this causes transaction deletes to target wrong table
                 # This fallback should not be used as it can't reliably determine the intended table
                 return ChatResponse(
                     response="❌ Delete Confirmation Failed\n\nCannot determine which archived table to delete from. Please start a new delete operation by saying something like:\n• 'delete archived transactions older than 60 days'\n• 'delete archived activities older than 60 days'",
@@ -839,7 +835,6 @@ class ChatService:
             logger.error(f"Error getting conversation history: {e}")
             return "No previous conversation history."
 
-   
     async def _handle_general_stats_request(self, user_info: dict, db: Session, region: str) -> ChatResponse:
         """Handle general table statistics request showing all tables"""
         try:
@@ -1304,11 +1299,11 @@ class ChatService:
         # Create role-specific welcome message
         if user_role == "Admin":
             title = f"Welcome {user_id}"
-            content = f"Hello {user_id}! I'm your Cloud Inventory assistant. As a Admin, you have full access to all operations including archiving and deletion."
+            content = f"Hello {user_id}! I'm your Cloud Inventory assistant. As a Admin, you have access to all operations including archiving and deletion."
             suggestions = []
         else:
             title = f"Welcome {user_id}"
-            content = f"Hello {user_id}! I'm your Cloud Inventory assistant. As a User, you have access to read operations."
+            content = f"Hello {user_id}! I'm your Cloud Inventory assistant. As a User, you have read-only access for viewing data."
             suggestions = []
         
         # Create welcome card structured content
