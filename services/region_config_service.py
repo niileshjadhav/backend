@@ -6,7 +6,6 @@ from sqlalchemy import text
 from datetime import datetime
 from models.region_config import RegionConfig
 from database import get_db
-from shared.enums import Region
 
 logger = logging.getLogger(__name__)
 

@@ -7,7 +7,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.engine import Engine
 import asyncio
 from contextlib import asynccontextmanager
-from shared.enums import TableName, Region
+from shared.enums import TableName
 from database import get_db
 from services.region_config_service import get_region_config_service
 from dotenv import load_dotenv

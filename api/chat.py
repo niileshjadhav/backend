@@ -6,7 +6,7 @@ from schemas import ChatMessage, ChatResponse, ConfirmationRequest
 from services.chat_service import ChatService
 from services.region_service import RegionService
 from security import get_current_user_optional, get_current_user_required
-from shared.enums import Region, TableName
+from shared.enums import TableName
 from typing import Optional, Dict, Any
 from datetime import datetime
 

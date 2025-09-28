@@ -2,14 +2,6 @@
 from enum import Enum
 
 
-class Region(Enum):
-    """Supported database regions"""
-    APAC = "APAC"
-    US = "US"
-    EU = "EU" 
-    MEA = "MEA"
-
-
 class TableName(Enum):
     """Supported table names"""
     DSI_ACTIVITIES = "dsiactivities"
