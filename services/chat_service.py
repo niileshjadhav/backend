@@ -182,10 +182,6 @@ class ChatService:
     ) -> ChatResponse:
         """Handle conversational messages using LLM without database operations"""
         try:
-            # Check if this is a capabilities query
-            if self._is_capabilities_query(user_message):
-                return self._format_capabilities_response(user_info, region)
-            
             # Use provided session_id or get from chat_log
             current_session_id = session_id or (chat_log.session_id if chat_log else f"session_{datetime.now().timestamp()}")
             conversation_history = self._get_conversation_history(current_session_id, db)
@@ -201,7 +197,7 @@ class ChatService:
             )
             
             response_text = llm_response.get("response", "I'm here to help with your Cloud Inventory log management questions!")
-            suggestions = llm_response.get("suggestions", ["Show table statistics", "Help with archiving", "Explain safety rules"])
+            suggestions = llm_response.get("suggestions", ["Show table statistics", "Explain safety rules"])
             
             # Create structured content for conversational responses
             structured_content = self._create_conversational_structured_content(
@@ -327,7 +323,7 @@ class ChatService:
         
         # Don't log simple conversational messages
         conversational_patterns = [
-            'hello', 'hi', 'help', 'what can you do', 'capabilities', 
+            'hello', 'hi', 'help', 
             'how are you', 'thanks', 'thank you', 'goodbye', 'bye',
             'what is', 'explain', 'tell me about', 'how does'
         ]
@@ -480,7 +476,7 @@ class ChatService:
                             user_id = user_info.get("username", "admin")
                             
                             response = f"📦 Archive Operation Completed - {region.upper()} Region\n\n"
-                            response += f"✅ Successfully archived **{archived_count:,}** records\n"
+                            response += f"✅ Successfully archived {archived_count:,} records\n"
                             response += f"From: {table_name}\n"
                             response += f"To: {table_name}_archive\n"
                             response += f"Executed by: {user_id}\n\n"
@@ -488,11 +484,10 @@ class ChatService:
                             
                             structured_content = {
                                 "type": "success_card",
-                                "title": f"Archive Completed - {region.upper()} Region",
-                                "count": archived_count,
-                                "operation": "archive",
+                                "title": "Archive Completed",
+                                "region": region.upper(),
                                 "details": [
-                                    f"Successfully archived **{archived_count:,}** records",
+                                    f"Successfully archived {archived_count:,} records",
                                     f"From: {table_name}",
                                     f"To: {table_name}_archive",
                                     f"Executed by: {user_id}"
@@ -538,21 +533,20 @@ class ChatService:
                             user_id = user_info.get("username", "admin")
                             
                             response = f"🗑️ Delete Operation Completed - {region.upper()} Region\n\n"
-                            response += f"✅ Successfully deleted **{deleted_count:,}** records\n"
+                            response += f"✅ Successfully deleted {deleted_count:,} records\n"
                             response += f"From: {table_name}\n"
                             response += f"Executed by: {user_id}\n\n"
-                            response += "⚠️ Records have been permanently removed from the archive table."
+                            response += "Records have been permanently removed from the archive table."
                             
                             structured_content = {
                                 "type": "success_card",
-                                "title": f"Delete Completed - {region.upper()} Region",
-                                "count": deleted_count,
-                                "operation": "delete",
+                                "title": "Delete Completed",
+                                "region": region.upper(),
                                 "details": [
-                                    f"Successfully deleted **{deleted_count:,}** records",
+                                    f"Successfully deleted {deleted_count:,} records",
                                     f"From: {table_name}",
                                     f"Executed by: {user_id}",
-                                    "⚠️ Records have been permanently removed"
+                                    "Records have been permanently removed"
                                 ]
                             }
                             
@@ -831,21 +825,7 @@ class ChatService:
             logger.error(f"Error getting conversation history: {e}")
             return "No previous conversation history."
 
-    def _is_capabilities_query(self, message: str) -> bool:
-        """Check if the message is asking about bot capabilities"""
-        capabilities_patterns = [
-            'what can you do', 'what are your capabilities', 'help me', 'what do you do',
-            'how can you help', 'what functions', 'what features', 'what services',
-            'tell me about yourself', 'what can you help with', 'capabilities',
-            'what are you capable of', 'what tasks can you perform'
-        ]
-        
-        message_lower = message.lower().strip()
-        
-        # Only treat as capabilities query if it explicitly asks about capabilities
-        # Not just any greeting message
-        return any(pattern in message_lower for pattern in capabilities_patterns)
-
+   
     async def _handle_general_stats_request(self, user_info: dict, db: Session, region: str) -> ChatResponse:
         """Handle general table statistics request showing all tables"""
         try:
@@ -896,101 +876,6 @@ class ChatService:
                 structured_content=self._create_error_structured_content(error_msg, region)
             )
 
-    def _format_capabilities_response(self, user_info: dict, region: str) -> ChatResponse:
-        """Format a structured capabilities response"""
-        user_role = user_info.get("role", "Monitor") if user_info else "Monitor"
-        user_name = user_info.get("username", "there") if user_info else "there"
-        
-        # Base capabilities for all users
-        capabilities = [
-            {
-                "icon": "📊",
-                "title": "Database Statistics",
-                "description": "Get comprehensive statistics for any table including record counts, date ranges, and data insights.",
-                "examples": ["Show activities stats", "Count transactions", "Table statistics"]
-            },
-            {
-                "icon": "🔍",
-                "title": "Data Querying",
-                "description": "Query and search through log records with filters, date ranges, and specific criteria.",
-                "examples": ["Find recent activities", "Find recent transactions"]
-            },
-            {
-                "icon": "💬",
-                "title": "Conversational AI",
-                "description": "Answer questions about your cloud inventory system and provide guidance on best practices.",
-                "examples": ["How does archiving work?", "Explain safety rules"]
-            }
-        ]
-        
-        # Add admin-only capabilities
-        if user_role == "Admin":
-            capabilities.extend([
-                {
-                    "icon": "📦",
-                    "title": "Archive Operations",
-                    "description": "Safely move old records to archive tables with confirmation workflows.",
-                    "examples": ["Archive activities older than 7 days", "Archive transactions older than 7 days"]
-                },
-                {
-                    "icon": "🗑️",
-                    "title": "Delete Operations",
-                    "description": "Permanently remove archived records with strict safety confirmations.",
-                    "examples": ["Delete archived activities older than 30 days", "Delete archived transactions older than 30 days"]
-                }
-            ])
-        
-        quick_tips = [
-            "Use natural language - I understand conversational requests",
-            f"Currently working in {region.upper()} region",
-            "I provide safety confirmations for destructive operations",
-            "Type specific table names or let me suggest the right one"
-        ]
-        
-        if user_role != "Admin":
-            quick_tips.append("Archive/delete operations require Admin privileges")
-        
-        # Plain text response for backward compatibility
-        response = f"👋 Hello {user_name}! I'm your Cloud Inventory Assistant\n\n"
-        response += f" Current Region: {region.upper()}\n"
-        response += f" Your Role: {user_role}\n\n"
-        response += "🚀 What I can help you with:\n\n"
-        
-        for cap in capabilities:
-            response += f"{cap['icon']}  {cap['title']}\n"
-            response += f"   {cap['description']}\n"
-            if cap.get('examples'):
-                response += f"   *Examples: {', '.join(cap['examples'])}*\n"
-            response += "\n"
-        
-        response += "💡 Quick Tips:\n"
-        for tip in quick_tips:
-            response += f"• {tip}\n"
-        
-        # Structured content for rich rendering
-        structured_content = {
-            "type": "capabilities_card",
-            "title": f"Hello {user_name}! 👋",
-            "subtitle": "Cloud Inventory Management Assistant",
-            "region": region.upper(),
-            "user_role": user_role,
-            "capabilities": capabilities,
-            "quick_tips": quick_tips
-        }
-        
-        # Enhanced suggestions based on user role
-        suggestions = ["Show table statistics"]
-        if user_role == "Admin":
-            suggestions.extend(["Archive activities older than 7 days", "Archive transactions older than 7 days"])
-        
-        return ChatResponse(
-            response=response,
-            response_type="capabilities",
-            structured_content=structured_content,
-            suggestions=suggestions,
-            context={"user_role": user_role, "region": region}
-        )
-
     def _format_stats_response(self, mcp_result: dict, table_name: str, region: str) -> ChatResponse:
         """Format table statistics response with structured content"""
         if not mcp_result.get("success"):
@@ -1012,7 +897,7 @@ class ChatService:
         is_activity_transaction_archive = table_name in ['dsiactivities', 'dsitransactionlog', 'dsiactivities_archive', 'dsitransactionlog_archive']
         
         if is_activity_transaction_archive:
-            response = f"📊 Record Count - {region.upper()} Region\n\n"
+            response = f"📊 Table Statistics - {region.upper()} Region\n\n"
             response += f"Table: {table_name}\n"
             response += f"Total Records: **{total_count:,}** (showing count only, not actual records)\n"
         else:
@@ -1025,7 +910,7 @@ class ChatService:
             response += f"Filter: Records {filter_description}\n"
 
         # Structured content for rich rendering
-        title = f"Record Count - {region.upper()} Region" if is_activity_transaction_archive else f"Table Statistics - {region.upper()} Region"
+        title = f"Table Statistics - {region.upper()} Region" if is_activity_transaction_archive else f"Table Statistics - {region.upper()} Region"
         structured_content = {
             "type": "stats_card",
             "title": title,
@@ -1067,7 +952,7 @@ class ChatService:
         total_found = mcp_result.get("total_records", len(records))
         
         # Plain text response for backward compatibility
-        response = f"� Record Count - {region.upper()} Region\n\n"
+        response = f"Table Statistics - {region.upper()} Region\n\n"
         response += f"Table: {table_name}\n"
         response += f"**Total Records Found: {total_found:,}**\n\n"
 
@@ -1079,7 +964,7 @@ class ChatService:
         # Structured content as stats card (no table data shown)
         structured_content = {
             "type": "stats_card",
-            "title": f"Record Count - {region.upper()} Region",
+            "title": f"Table Statistics - {region.upper()} Region",
             "icon": "�",
             "table_name": table_name,
             "region": region.upper(),
@@ -1182,17 +1067,20 @@ class ChatService:
             if not mcp_result.get('filters', {}).get('date_filter'):
                 response += "🛡️ Safety Filter Applied: Only records older than 7 days will be archived.\n"
             
-            response += "\nType 'CONFIRM ARCHIVE' to proceed or 'CANCEL' to abort."
+            response += "\Click 'CONFIRM ARCHIVE' to proceed or 'CANCEL' to abort."
             
             # Structured content for confirmation
             structured_content = {
                 "type": "confirmation_card",
-                "title": f"Archive Preview - {region.upper()} Region",
-                "operation": "archive",
-                "table_name": table_name,
-                "count": count,
-                "warning": "This will move records from main table to archive table.",
-                "instructions": "Type 'CONFIRM ARCHIVE' to proceed or 'CANCEL' to abort."
+                "title": "Archive Preview",
+                "region": region.upper(),
+                "details": [
+                    f"Ready to Archive: {count:,} records",
+                    f"From Table: {table_name}",
+                    f"To Table: {table_name}_archive",
+                    "⚠️ This will move records from main table to archive table.",
+                    "Click 'CONFIRM ARCHIVE' to proceed or 'CANCEL' to abort."
+                ]
             }
             
             return ChatResponse(
@@ -1213,12 +1101,12 @@ class ChatService:
             # Structured content for no records
             structured_content = {
                 "type": "success_card",
-                "title": f"Archive Result - {region.upper()} Region",
-                "operation": "archive",
-                "table_name": table_name,
-                "count": 0,
-                "message": "No records found matching the criteria",
-                "details": ["No archive operation was needed"]
+                "title": "Archive Result",
+                "region": region.upper(),
+                "details": [
+                    "No records found matching the criteria",
+                    "No archive operation was needed"
+                ]
             }
             
             return ChatResponse(
@@ -1232,7 +1120,7 @@ class ChatService:
         # This is the actual result
         if mcp_result.get("success"):
             response = f"📦 Archive Operation Completed - {region.upper()} Region\n\n"
-            response += f"✅ Successfully archived **{count:,}** records\n"
+            response += f"✅ Successfully archived {count:,} records\n"
             response += f"From: {table_name}\n"
             response += f"To: {table_name}_archive\n\n"
             response += "Records have been moved from the main table to the archive table."
@@ -1240,11 +1128,10 @@ class ChatService:
             # Structured content for success
             structured_content = {
                 "type": "success_card",
-                "title": f"Archive Completed - {region.upper()} Region",
-                "count": count,
-                "operation": "archive",
+                "title": "Archive Completed",
+                "region": region.upper(),
                 "details": [
-                    f"Successfully archived **{count:,}** records",
+                    f"Successfully archived {count:,} records",
                     f"From: {table_name}",
                     f"To: {table_name}_archive"
                 ]
@@ -1281,12 +1168,14 @@ class ChatService:
             # Structured content for confirmation
             structured_content = {
                 "type": "confirmation_card",
-                "title": f"Delete Preview - {region.upper()} Region",
-                "operation": "delete",
-                "table_name": table_name,
-                "count": count,
-                "warning": "🚨 WARNING: THIS WILL PERMANENTLY DELETE RECORDS 🚨",
-                "instructions": "Type 'CONFIRM DELETE' to proceed or 'CANCEL' to abort."
+                "title": "Delete Preview",
+                "region": region.upper(),
+                "details": [
+                    f"Ready to Delete: {count:,} records",
+                    f"From Table: {table_name}",
+                    "🚨 WARNING: THIS WILL PERMANENTLY DELETE RECORDS 🚨",
+                    "Type 'CONFIRM DELETE' to proceed or 'CANCEL' to abort."
+                ]
             }
             
             return ChatResponse(
@@ -1307,12 +1196,12 @@ class ChatService:
             # Structured content for no records
             structured_content = {
                 "type": "success_card",
-                "title": f"Delete Result - {region.upper()} Region",
-                "operation": "delete",
-                "table_name": table_name,
-                "count": 0,
-                "message": "No records found matching the criteria",
-                "details": ["No records found matching the criteria"]
+                "title": "Delete Result",
+                "region": region.upper(),
+                "details": [
+                    "No records found matching the criteria",
+                    "No delete operation was needed"
+                ]
             }
             
             return ChatResponse(
@@ -1326,20 +1215,19 @@ class ChatService:
         # This is the actual result
         if mcp_result.get("success"):
             response = f"🗑️ Delete Operation Completed - {region.upper()} Region\n\n"
-            response += f"✅ Successfully deleted **{count:,}** records\n"
+            response += f"✅ Successfully deleted {count:,} records\n"
             response += f"From: {table_name}\n\n"
-            response += "⚠️ Records have been permanently removed."
+            response += "Records have been permanently removed."
             
             # Structured content for success
             structured_content = {
                 "type": "success_card",
-                "title": f"Delete Completed - {region.upper()} Region",
-                "count": count,
-                "operation": "delete",
+                "title": "Delete Completed",
+                "region": region.upper(),
                 "details": [
-                    f"Successfully deleted **{count:,}** records",
+                    f"Successfully deleted {count:,} records",
                     f"From: {table_name}",
-                    "⚠️ Records have been permanently removed"
+                    "Records have been permanently removed"
                 ]
             }
         else:
@@ -1362,7 +1250,8 @@ class ChatService:
             
             structured_content = {
                 "type": "success_card",
-                "title": f"System Health Check - {region.upper()} Region",
+                "title": "System Health Check",
+                "region": region.upper(),
                 "details": [
                     "All database connections are operational",
                     "Services are running normally",

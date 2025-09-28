@@ -126,7 +126,6 @@ class OpenAIService:
         # Common suggestions based on log management context
         default_suggestions = [
             "Show table statistics",
-            "Help with archiving", 
             "Explain safety rules"
         ]
         
@@ -157,8 +156,6 @@ class OpenAIService:
                        "What would you like to know about?",
             "suggestions": [
                 "Show table statistics",
-                "What can you do?",
-                "Help with archiving",
                 "Explain safety rules"
             ],
             "source": "fallback"

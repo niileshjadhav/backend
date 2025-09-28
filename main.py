@@ -66,7 +66,7 @@ async def lifespan(app: FastAPI):
 # Initialize FastAPI
 app = FastAPI(
     title="Cloud Inventory Log Management API",
-    description="Log Management System with Role-Based Access",
+    description="Log Management System",
     version="2.0.0",
     lifespan=lifespan,
     # Add OpenAPI security scheme for better documentation
