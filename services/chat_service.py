@@ -189,6 +189,10 @@ class ChatService:
             user_id = user_info.get("username", "anonymous") if user_info else "anonymous"
             user_role = user_info.get("role", "Monitor") if user_info else "Monitor"
             
+            # Check if this is a greeting/welcome message
+            if self._is_greeting_message(user_message):
+                return self._create_welcome_response(user_id, user_role, region)
+            
             # Generate conversational response using OpenAI
             llm_response = await self.llm_service.generate_response(
                 user_message=user_message,
@@ -304,6 +308,16 @@ class ChatService:
             'database summary', 'show all tables', 'list all tables'
         ]
         return any(pattern in message_lower for pattern in general_stats_patterns)
+
+    def _is_greeting_message(self, message: str) -> bool:
+        """Check if message is a greeting/initialization message"""
+        message_lower = message.lower().strip()
+        greeting_patterns = [
+            'hello', 'hi', 'good morning', 'good afternoon', 
+            'logged in as', 'i\'m logged in', 'working with region',
+            'selected but not connected', 'role.'
+        ]
+        return any(pattern in message_lower for pattern in greeting_patterns)
 
     def _should_log_operation(self, message: str) -> bool:
         """Determine if this message should be logged in chatops_log table"""
@@ -1067,7 +1081,7 @@ class ChatService:
             if not mcp_result.get('filters', {}).get('date_filter'):
                 response += "🛡️ Safety Filter Applied: Only records older than 7 days will be archived.\n"
             
-            response += "\Click 'CONFIRM ARCHIVE' to proceed or 'CANCEL' to abort."
+            response += "Click 'CONFIRM ARCHIVE' to proceed or 'CANCEL' to abort."
             
             # Structured content for confirmation
             structured_content = {
@@ -1268,6 +1282,58 @@ class ChatService:
             response_type="health_check",
             structured_content=structured_content,
             context={"tool": "health_check"}
+        )
+
+    def _create_welcome_response(self, user_id: str, user_role: str, region: str) -> ChatResponse:
+        """Create a welcome card response for greeting messages"""
+        # Determine connection status
+        region_service = get_region_service()
+        connection_status = "no_region"
+        region_backend_connected = None
+        region_display = "No Region"
+        
+        if region:
+            region_display = region.upper()
+            if region_service.is_connected(region):
+                connection_status = "connected"
+                region_backend_connected = True
+            else:
+                connection_status = "disconnected" 
+                region_backend_connected = False
+        
+        # Create role-specific welcome message
+        if user_role == "Admin":
+            title = f"Welcome {user_id}"
+            content = f"Hello {user_id}! I'm your Cloud Inventory assistant. As a Admin, you have full access to all operations including archiving and deletion."
+            suggestions = []
+        else:
+            title = f"Welcome {user_id}"
+            content = f"Hello {user_id}! I'm your Cloud Inventory assistant. As a User, you have access to read operations."
+            suggestions = []
+        
+        # Create welcome card structured content
+        structured_content = {
+            "type": "welcome_card",
+            "title": title,
+            "region": region_display,
+            "user_role": user_role,
+            "content": content,
+            "suggestions": suggestions,
+            "connection_status": connection_status,
+            "context": {
+                "response_type": "initialization",
+                "timestamp": datetime.now().isoformat(),
+                "region_provided": region is not None,
+                "region_backend_connected": region_backend_connected,
+                "message_type": connection_status
+            }
+        }
+        
+        return ChatResponse(
+            response=content,
+            suggestions=suggestions,
+            response_type="welcome",
+            structured_content=structured_content
         )
 
     def _create_conversational_structured_content(self, response_text: str, user_role: str, region: str, suggestions: List[str]) -> Dict[str, Any]:
