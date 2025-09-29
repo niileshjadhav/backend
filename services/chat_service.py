@@ -897,53 +897,69 @@ class ChatService:
             )
         
         # Build statistics display - MCP result returns data at root level
-        total_count = mcp_result.get("record_count", 0)
+        filtered_count = mcp_result.get("record_count", 0)  # This is the filtered count (or total if no filter)
+        total_records = mcp_result.get("total_records", 0)   # This is always the total count
         earliest_date = mcp_result.get("earliest_date")
         latest_date = mcp_result.get("latest_date")
         filter_description = mcp_result.get("filter_description")
+        filter_applied = mcp_result.get("filter_applied")
+        
+        # Determine if filters were applied
+        has_filter = bool(filter_applied or filter_description)
         
         # Plain text response for backward compatibility
         is_activity_transaction_archive = table_name in ['dsiactivities', 'dsitransactionlog', 'dsiactivities_archive', 'dsitransactionlog_archive']
         
-        if is_activity_transaction_archive:
-            response = f"📊 Table Statistics - {region.upper()} Region\n\n"
-            response += f"Table: {table_name}\n"
-            response += f"Total Records: **{total_count:,}** (showing count only, not actual records)\n"
-        else:
-            response = f"📊 Table Statistics - {region.upper()} Region\n\n" 
-            response += f"Table: {table_name}\n"
-            response += f"Total Records: **{total_count:,}**\n"
+        response = f"Table Statistics - {region.upper()} Region\n\n"
+        response += f"Table: {table_name}\n"
         
-        # Add filter information if available
-        if filter_description:
+        if has_filter:
+            # Show filtered count as primary when filters are applied
+            if is_activity_transaction_archive:
+                response += f"Records: **{filtered_count:,}** (showing count only, not actual records)\n"
+            else:
+                response += f"Records: **{filtered_count:,}**\n"
             response += f"Filter: Records {filter_description}\n"
+        else:
+            # Show total count when no filters are applied
+            if is_activity_transaction_archive:
+                response += f"Total Records: **{filtered_count:,}** (showing count only, not actual records)\n"
+            else:
+                response += f"Total Records: **{filtered_count:,}**\n"
 
         # Structured content for rich rendering
-        title = f"Table Statistics - {region.upper()} Region" if is_activity_transaction_archive else f"Table Statistics - {region.upper()} Region"
         structured_content = {
             "type": "stats_card",
-            "title": title,
+            "title": f"Table Statistics",
             "icon": "📊",
             "table_name": table_name,
             "region": region.upper(),
-            "stats": [
-                {"label": "Total Records", "value": f"{total_count:,}", "type": "number", "highlight": True},
-            ]
+            "stats": []
         }
         
-        # Add additional stats to structured content from MCP result
-        if filter_description:
+        # Add appropriate stats based on whether filters are applied
+        if has_filter:
+            # Primary stat is the filtered count only
             structured_content["stats"].append({
-                "label": f"Filtered ({filter_description})", 
-                "value": f"{total_count:,}", 
-                "type": "number"
+                "label": f"{filter_description}", 
+                "value": f"{filtered_count:,}", 
+                "type": "number", 
+                "highlight": True
+            })
+        else:
+            # Primary stat is the total count
+            structured_content["stats"].append({
+                "label": "Total Records", 
+                "value": f"{filtered_count:,}", 
+                "type": "number", 
+                "highlight": True
             })
         
         return ChatResponse(
             response=response,
             response_type="stats",
             structured_content=structured_content,
-            context={"count": total_count, "table": table_name, "tool": "get_table_stats"}
+            context={"count": filtered_count, "table": table_name, "tool": "get_table_stats", "has_filter": has_filter}
         )
 
     def _format_query_response(self, mcp_result: dict, table_name: str, region: str) -> ChatResponse:
@@ -961,7 +977,7 @@ class ChatService:
         total_found = mcp_result.get("total_records", len(records))
         
         # Plain text response for backward compatibility
-        response = f"Table Statistics - {region.upper()} Region\n\n"
+        response = f"Table Statistics"
         response += f"Table: {table_name}\n"
         response += f"**Total Records Found: {total_found:,}**\n\n"
 
@@ -973,7 +989,7 @@ class ChatService:
         # Structured content as stats card (no table data shown)
         structured_content = {
             "type": "stats_card",
-            "title": f"Table Statistics - {region.upper()} Region",
+            "title": f"Table Statistics",
             "icon": "�",
             "table_name": table_name,
             "region": region.upper(),
@@ -1083,6 +1099,8 @@ class ChatService:
                 "type": "confirmation_card",
                 "title": "Archive Preview",
                 "region": region.upper(),
+                "count": count,  # Add count for frontend display
+                "table": table_name,  # Add table name
                 "details": [
                     f"Ready to Archive: {count:,} records",
                     f"From Table: {table_name}",
@@ -1097,6 +1115,13 @@ class ChatService:
                 response_type="archive_confirmation",
                 structured_content=structured_content,
                 requires_confirmation=True,
+                operation_data={
+                    "confirmation_id": f"archive_{table_name}_{count}",
+                    "operation": "ARCHIVE",
+                    "details": f"Ready to Archive: {count:,} records from {table_name}",
+                    "count": count,
+                    "table": table_name
+                },
                 context={"count": count, "tool": "archive_records", "table": table_name}
             )
         
@@ -1179,6 +1204,8 @@ class ChatService:
                 "type": "confirmation_card",
                 "title": "Delete Preview",
                 "region": region.upper(),
+                "count": count,  # Add count for frontend display
+                "table": table_name,  # Add table name
                 "details": [
                     f"Ready to Delete: {count:,} records",
                     f"From Table: {table_name}",
@@ -1192,6 +1219,13 @@ class ChatService:
                 response_type="delete_confirmation",
                 structured_content=structured_content,
                 requires_confirmation=True,
+                operation_data={
+                    "confirmation_id": f"delete_{table_name}_{count}",
+                    "operation": "DELETE",
+                    "details": f"Ready to Delete: {count:,} records from {table_name}",
+                    "count": count,
+                    "table": table_name
+                },
                 context={"count": count, "tool": "delete_archived_records", "table": table_name}
             )
         

@@ -298,7 +298,14 @@ async def _archive_records(
             
             if result.get("success"):
                 # Handle both preview and actual archive results
-                archived_count = result.get("records_archived", 0) or result.get("preview_count", 0)
+                # For previews, use preview_count; for actual operations, use records_archived
+                if result.get("requires_confirmation", False):
+                    # This is a preview - use preview_count
+                    archived_count = result.get("preview_count", 0)
+                else:
+                    # This is actual execution - use records_archived
+                    archived_count = result.get("records_archived", 0)
+                
                 return {
                     "success": True,
                     "archived_count": archived_count,
@@ -428,7 +435,15 @@ async def _delete_archived_records(
             )
             
             if result.get("success"):
-                deleted_count = result.get("records_deleted", 0) or result.get("preview_count", 0)
+                # Handle both preview and actual delete results
+                # For previews, use preview_count; for actual operations, use records_deleted
+                if result.get("requires_confirmation", False):
+                    # This is a preview - use preview_count
+                    deleted_count = result.get("preview_count", 0)
+                else:
+                    # This is actual execution - use records_deleted
+                    deleted_count = result.get("records_deleted", 0)
+                
                 return {
                     "success": True,
                     "deleted_count": deleted_count,
