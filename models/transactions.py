@@ -76,8 +76,3 @@ class ArchiveDSITransactionLog(Base):
     Marking = Column(String(3))
     OrgUnitID = Column(String(50))
     TrackingReference = Column(String(200))
-    
-    # Archive specific columns
-    archived_at = Column(TIMESTAMP, server_default=text('CURRENT_TIMESTAMP'))
-    archived_by = Column(String(64))
-    archive_reason = Column(String(255))

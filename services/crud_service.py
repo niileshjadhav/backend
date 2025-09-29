@@ -361,35 +361,14 @@ class CRUDService:
         
         archive_query = text(f"""
             INSERT INTO {archive_table} 
-            ({columns_list}, archived_at, archived_by, archive_reason)
-            SELECT {values_list}, 
-                CURRENT_TIMESTAMP as archived_at,
-                :user_id as archived_by,
-                :reason as archive_reason
+            ({columns_list})
+            SELECT {values_list}
             FROM {main_table} 
             WHERE {where_clause}
         """)
         
         result = self.db.execute(archive_query, params)
         archived_count = result.rowcount
-        
-        # Verify archive operation with MySQL-compatible query
-        verify_query = text(f"""
-            SELECT COUNT(*) FROM {archive_table} 
-            WHERE archived_by = :verify_user_id 
-            AND archived_at >= DATE_SUB(NOW(), INTERVAL 1 MINUTE)
-        """)
-        
-        try:
-            verified_count = self.db.execute(verify_query, {"verify_user_id": user_id}).scalar()
-        except Exception as e:
-            # Fallback verification - just check total count
-            logger.warning(f"Archive verification query failed: {e}, using fallback")
-            verified_count = archived_count  # Assume success if we can't verify
-        
-        if verified_count != archived_count:
-            logger.warning(f"Archive verification mismatch. Expected {archived_count}, found {verified_count}")
-            # Don't fail the operation - this might be due to database dialect differences
         
         # Delete from main table
         delete_query = text(f"""

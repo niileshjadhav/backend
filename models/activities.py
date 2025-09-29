@@ -57,8 +57,3 @@ class ArchiveDSIActivities(Base):
     EventID = Column(String(50))
     DefaultDescription = Column(String(2000))
     ExceptionMessage = Column(String(2000))
-    
-    # Archive specific columns
-    archived_at = Column(TIMESTAMP, server_default=text('CURRENT_TIMESTAMP'))
-    archived_by = Column(String(64))
-    archive_reason = Column(String(255))
