@@ -183,10 +183,9 @@ class OpenAIService:
 
             Available MCP Tools:
             1. get_table_stats - Use for ACTIVITIES/TRANSACTIONS/ARCHIVE queries (shows counts, not records)
-            2. query_logs - Use for OTHER table queries (when user wants to see actual data from non-activity/transaction tables)
-            3. archive_records - Use for archiving old records to archive tables
-            4. delete_archived_records - Use for deleting records from archive tables
-            5. health_check - Use for system health/status checks
+            2. archive_records - Use for archiving old records to archive tables
+            3. delete_archived_records - Use for deleting records from archive tables
+            4. health_check - Use for system health/status checks
 
             CONFIRMATION HANDLING:
             If this is a confirmation (contains "CONFIRM ARCHIVE" or "CONFIRM DELETE"):
@@ -196,18 +195,17 @@ class OpenAIService:
             - Use archive_records for "CONFIRM ARCHIVE" or delete_archived_records for "CONFIRM DELETE"
 
             SAFETY RULES - CRITICAL:
-            🛡️ Archive operations without date filters → System applies default 7-day minimum age filter
-            🛡️ Delete operations without date filters → System applies default 30-day minimum age filter
-            🛡️ These defaults prevent accidental processing of ALL records
-            
+            - Archive operations without date filters → System applies default 7-day minimum age filter
+            - Delete operations without date filters → System applies default 30-day minimum age filter
+            - These defaults prevent accidental processing of ALL records
+
             Key Analysis Rules:
-            ✅ COUNT/HOW MANY/STATISTICS queries → ALWAYS use get_table_stats
-            ✅ ACTIVITIES/TRANSACTIONS/ARCHIVE QUERIES → ALWAYS use get_table_stats (show counts, not records)
-            ✅ OTHER TABLE QUERIES → Use query_logs for showing actual records
-            ✅ GENERAL DATABASE STATS (e.g., "show table statistics", "database statistics") → use get_table_stats with NO table name (leave empty)
-            ✅ Table Selection: Use main tables (dsiactivities, dsitransactionlog) unless specifically asked for archived data
-            ✅ Context-aware parsing: If user says "show me more" or "archive those", refer to previous conversation
-            ✅ Date filters: Parse natural language dates
+            - COUNT/HOW MANY/STATISTICS queries → ALWAYS use get_table_stats
+            - ACTIVITIES/TRANSACTIONS/ARCHIVE QUERIES → ALWAYS use get_table_stats (show counts, not records)
+            - GENERAL DATABASE STATS (e.g., "show table statistics", "database statistics") → use get_table_stats with NO table name (leave empty)
+            - Table Selection: Use main tables (dsiactivities, dsitransactionlog) unless specifically asked for archived data
+            - Context-aware parsing: If user says "show me more" or "archive those", refer to previous conversation
+            - Date filters: Parse natural language dates
                - "older than 10 months" → {{"date_filter": "older_than_10_months"}}
                - "older than 12 months" → {{"date_filter": "older_than_12_months"}}
                - "from last year" → {{"date_filter": "from_last_year"}}
@@ -317,15 +315,13 @@ class OpenAIService:
             
             # Execute the MCP tool
             from cloud_mcp.server import (
-                query_logs, archive_records, delete_archived_records, 
+                archive_records, delete_archived_records, 
                 get_table_stats, health_check
             )
             
             mcp_result = None
             
-            if tool_name == "query_logs" and table_name:
-                mcp_result = await query_logs(table_name, filters, None)  # No limit to show actual count
-            elif tool_name == "archive_records" and table_name:
+            if tool_name == "archive_records" and table_name:
                 mcp_result = await archive_records(table_name, filters, "system")
             elif tool_name == "delete_archived_records" and table_name:
                 mcp_result = await delete_archived_records(table_name, filters, "system")

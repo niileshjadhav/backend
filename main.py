@@ -4,7 +4,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from contextlib import asynccontextmanager
 import logging
-import asyncio
 
 # Initialize logging first
 logging.basicConfig(level=logging.INFO)
@@ -12,8 +11,6 @@ logger = logging.getLogger(__name__)
 
 from database import test_connection, Base, engine
 # Import all models to ensure they are registered with SQLAlchemy
-from models import (DSIActivities, ArchiveDSIActivities, DSITransactionLog, 
-                   ArchiveDSITransactionLog, AuditLog, User, ChatOpsLog, RegionConfig)
 from api import chat_router
 from api.auth import router as auth_router
 from api.regions import router as regions_router
@@ -28,7 +25,7 @@ try:
     missing_tables = [t for t in required_tables if t not in existing_tables]
     
     if missing_tables:
-        logger.warning(f"⚠️ Missing tables detected: {missing_tables}")
+        logger.warning(f"Missing tables detected: {missing_tables}")
         # Only create missing tables
         Base.metadata.create_all(bind=engine, checkfirst=True)
         logger.info("🔧 Created missing tables")
@@ -52,16 +49,13 @@ async def lifespan(app: FastAPI):
     # Startup
     if test_connection():
         logger.info("Database connection successful")
-        logger.info("MCP server ready - 5 tools available")
+        logger.info("MCP server ready to handle requests")
         logger.info("Application started successfully")
     else:
         logger.error("Database connection failed")
         raise Exception("Database connection failed")
     
     yield
-    
-    # Shutdown (if needed)
-    # Add any cleanup code here
 
 # Initialize FastAPI
 app = FastAPI(

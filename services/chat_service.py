@@ -247,15 +247,6 @@ class ChatService:
             if tool_used == "get_table_stats":
                 return self._format_stats_response(mcp_result, table_used, region)
                 
-            elif tool_used == "query_logs":
-                # For activities/transactions/archive tables, redirect to stats (count only)
-                if table_used in ['dsiactivities', 'dsitransactionlog', 'dsiactivities_archive', 'dsitransactionlog_archive']:
-                    logger.info(f"Redirecting query_logs for {table_used} to stats display (count only)")
-                    return self._format_stats_response(mcp_result, table_used, region)
-                else:
-                    # For other tables (if any), show actual records
-                    return self._format_query_response(mcp_result, table_used, region)
-                
             elif tool_used == "archive_records":
                 return self._format_archive_response(mcp_result, table_used, region, session_id)
                 

@@ -60,137 +60,6 @@ logger = logging.getLogger(__name__)
 mcp = FastMCP("Cloud Inventory Database Server")
 
 # Define the actual implementation functions
-async def _query_logs(
-    table_name: str,
-    filters: Optional[Dict[str, Any]] = None,
-    limit: Optional[int] = None,
-    offset: int = 0
-) -> Dict[str, Any]:
-    """Query database logs with filters"""
-    try:
-        from datetime import datetime, timedelta
-        
-        # Get database session
-        db_gen = get_db()
-        db = next(db_gen)
-        
-        try:
-            # Map table names to models
-            model_map = {
-                "dsiactivities": DSIActivities,
-                "dsitransactionlog": DSITransactionLog,
-                "dsiactivities_archive": ArchiveDSIActivities,
-                "dsitransactionlog_archive": ArchiveDSITransactionLog
-            }
-            
-            if table_name not in model_map:
-                return {"success": False, "error": f"Unknown table: {table_name}"}
-            
-            model = model_map[table_name]
-            query = db.query(model)
-            
-            # Apply date filters if specified
-            filter_description = None
-            if filters and "date_filter" in filters:
-                current_date = datetime.now()
-                date_filter = filters["date_filter"]
-                # Parse date filter and calculate cutoff date
-                cutoff_date = None
-                if "older_than_" in date_filter:
-                    # Parse "older_than_X_months", "older_than_X_days", etc.
-                    parts = date_filter.replace("older_than_", "").split("_")
-                    if len(parts) >= 2:
-                        try:
-                            number = int(parts[0])
-                            unit = parts[1]
-                            
-                            if unit.startswith("month"):
-                                cutoff_date = current_date - timedelta(days=number * 30)
-                                filter_description = f"older than {number} months"
-                            elif unit.startswith("day"):
-                                cutoff_date = current_date - timedelta(days=number)
-                                filter_description = f"older than {number} days"
-                            elif unit.startswith("year"):
-                                cutoff_date = current_date - timedelta(days=number * 365)
-                                filter_description = f"older than {number} years"
-                        except ValueError:
-                            pass  # Skip invalid date filter
-                
-                elif date_filter == "yesterday":
-                    cutoff_date = current_date - timedelta(days=1)
-                    filter_description = "from yesterday"
-                elif date_filter == "recent":
-                    cutoff_date = current_date - timedelta(days=7)
-                    filter_description = "from last 7 days"
-                
-                # Apply the date filter to the query
-                if cutoff_date:
-                    cutoff_string = cutoff_date.strftime("%Y%m%d%H%M%S")
-                    
-                    # For "recent" filter, we want records NEWER than cutoff (greater than)
-                    # For other filters like "older_than_X", we want records OLDER than cutoff (less than)
-                    if filters and filters.get("date_filter") == "recent":
-                        # Recent records: date field >= cutoff_string
-                        if hasattr(model, 'PostedTime'):
-                            # Activities tables use PostedTime
-                            query = query.filter(model.PostedTime >= cutoff_string)
-                        elif hasattr(model, 'WhenReceived'):
-                            # Transaction tables use WhenReceived
-                            query = query.filter(model.WhenReceived >= cutoff_string)
-                        elif hasattr(model, 'EndDateTime'):
-                            query = query.filter(model.EndDateTime >= cutoff_string)
-                    else:
-                        # Older records: date field < cutoff_string
-                        if hasattr(model, 'PostedTime'):
-                            # Activities tables use PostedTime
-                            query = query.filter(model.PostedTime < cutoff_string)
-                        elif hasattr(model, 'WhenReceived'):
-                            # Transaction tables use WhenReceived
-                            query = query.filter(model.WhenReceived < cutoff_string)
-                        elif hasattr(model, 'EndDateTime'):
-                            query = query.filter(model.EndDateTime < cutoff_string)
-            
-            # Apply offset and limit
-            query = query.offset(offset)
-            if limit is not None:
-                query = query.limit(limit)
-            
-            # Execute query
-            records = query.all()
-            
-            # Convert to dict format with formatted dates
-            records_list = []
-            date_columns = ['PostedTime', 'EndDateTime', 'WhenReceived', 'WhenProcessed', 'WhenExtracted', 'DeviceUTCTime', 'DeviceLocalTime', 'StartDateTime']
-            
-            for record in records:
-                record_dict = {}
-                for column in record.__table__.columns:
-                    value = getattr(record, column.name)
-                    # Format date columns for better readability
-                    if column.name in date_columns and value:
-                        record_dict[column.name] = format_database_date(value)
-                    else:
-                        record_dict[column.name] = value
-                records_list.append(record_dict)
-            
-            return {
-                "success": True,
-                "records": records_list,
-                "total_records": len(records_list),
-                "filter_applied": filters.get("date_filter", "") if filters else "",
-                "filter_description": filter_description
-            }
-            
-        finally:
-            db.close()
-        
-    except Exception as e:
-        logger.error(f"Error in query_logs: {e}")
-        return {
-            "success": False,
-            "error": str(e)
-        }
-
 async def _archive_records(
     table_name: str,
     filters: Dict[str, Any],
@@ -877,16 +746,6 @@ async def _execute_confirmed_delete(
         }
 
 # Register MCP tools that wrap the internal functions
-@mcp.tool(name="query_logs")
-async def mcp_query_logs(
-    table_name: str,
-    filters: Optional[Dict[str, Any]] = None,
-    limit: Optional[int] = None,
-    offset: int = 0
-) -> Dict[str, Any]:
-    """Query database logs with filters"""
-    return await _query_logs(table_name, filters, limit, offset)
-
 @mcp.tool(name="archive_records")
 async def mcp_archive_records(
     table_name: str,
@@ -918,7 +777,6 @@ async def mcp_health_check() -> Dict[str, Any]:
     """Health check for the MCP server"""
     return await _health_check()
 
-query_logs = _query_logs
 archive_records = _archive_records  
 delete_archived_records = _delete_archived_records
 get_table_stats = _get_table_stats
@@ -930,19 +788,27 @@ execute_confirmed_delete = _execute_confirmed_delete
 activities_schema = {
     "table": "dsiactivities",
     "columns": [
-        {"name": "id", "type": "int", "description": "Unique identifier"},
-        {"name": "UserName", "type": "string", "description": "User who performed activity"},
+        {"name": "SequenceID", "type": "int", "description": "Unique identifier"},
+        {"name": "ActivityID", "type": "string", "description": "Unique activity ID"},
         {"name": "ActivityType", "type": "string", "description": "Type of activity"},
-        {"name": "StartDateTime", "type": "datetime", "description": "When activity started"},
-        {"name": "EndDateTime", "type": "datetime", "description": "When activity ended"},
-        {"name": "ServiceName", "type": "string", "description": "Service involved"},
-        {"name": "Region", "type": "string", "description": "Geographic region"}
+        {"name": "AgentName", "type": "string", "description": "Name of the agent"},
+        {"name": "PostedTime", "type": "datetime", "description": "When activity posted"},
+        {"name": "PostedTimeUTC", "type": "datetime", "description": "When activity posted (UTC)"},
+        {"name": "MethodName", "type": "string", "description": "Method invoked"},
+        {"name": "ServerName", "type": "string", "description": "Server involved"},
+        {"name": "InstanceID", "type": "string", "description": "Instance ID"},
+        {"name": "EventID", "type": "string", "description": "Event ID"}
     ],
     "sample_filters": {
-        "UserName": "john.doe",
-        "ActivityType": "compute",
-        "ServiceName": "EC2",
-        "Region": "us-east-1"
+        "SequenceID": "1",
+        "ActivityID": "95302abb-8e4c-45bf-9dc7-d579a534f34f",
+        "ActivityType": "Event",
+        "AgentName": "DSIManager",
+        "PostedTime": "20250117131117",
+        "MethodName": "GetLicenses",
+        "ServerName": "USE2PLTFRMDV-D1",
+        "InstanceID": "87522dda846f43aab3ba834891c77419",
+        "EventID": "MGR150"
     }
 }
 
@@ -950,18 +816,33 @@ transaction_schema = {
     "table": "dsitransactionlog", 
     "columns": [
         {"name": "RecordID", "type": "int", "description": "Unique identifier"},
-        {"name": "UserID", "type": "string", "description": "User who made transaction"},
-        {"name": "TransactionType", "type": "string", "description": "Type of transaction"},
-        {"name": "WhenReceived", "type": "datetime", "description": "When transaction was received"},
-        {"name": "WhenProcessed", "type": "datetime", "description": "When transaction was processed"},
-        {"name": "ServerName", "type": "string", "description": "Server involved"},
-        {"name": "DeviceID", "type": "string", "description": "Device identifier"}
+        {"name": "RecordStatus", "type": "string", "description": "Record status"},
+        {"name": "ProcessMethod", "type": "string", "description": "Process method"},
+        {"name": "TransactionType", "type": "datetime", "description": "Transaction type"},
+        {"name": "ServerName", "type": "datetime", "description": "Server name"},
+        {"name": "DeviceID", "type": "string", "description": "Device identifier"},
+        {"name": "UserID", "type": "string", "description": "User identifier"},
+        {"name": "DeviceLocalTime", "type": "string", "description": "Device local time"},
+        {"name": "DeviceUTCTime", "type": "string", "description": "Device UTC time"},
+        {"name": "WhenReceived", "type": "string", "description": "When received"},
+        {"name": "WhenProcessed", "type": "string", "description": "When processed"},
+        {"name": "PromotionLevelID", "type": "string", "description": "Promotion level ID"},
+        {"name": "EnvironmentID", "type": "string", "description": "Environment ID"},
     ],
     "sample_filters": {
-        "UserName": "jane.smith",
-        "TransactionType": "billing",
-        "ServiceName": "S3",
-        "Region": "us-west-2"
+        "RecordID": "14900",
+        "RecordStatus": "1",
+        "ProcessMethod": "S",
+        "TransactionType": "A",
+        "ServerName": "USE2PLTFRMDV-D2",
+        "DeviceID": "H591e07610",
+        "UserID": "DSI",
+        "DeviceLocalTime": "20250909110721",
+        "DeviceUTCTime": "20250909110721",
+        "WhenReceived": "20250909110721",
+        "WhenProcessed": "20250909110721",
+        "PromotionLevelID": "Production",
+        "EnvironmentID": "Prod"
     }
 }
 

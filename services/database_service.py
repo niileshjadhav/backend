@@ -48,60 +48,6 @@ class DatabaseService:
         """Validate if table name is supported"""
         return table_name in self.VALID_TABLE_NAMES
     
-    async def query_logs(
-        self,
-        table_name: str,
-        filters: Optional[Dict[str, Any]] = None,
-        limit: int = None,
-        offset: int = 0
-    ) -> Dict[str, Any]:
-        """Query log records with optional filters - replaces MCP query_logs tool"""
-        try:
-            # Validate inputs
-            if not self.validate_table_name(table_name):
-                return {
-                    "success": False,
-                    "error": f"Invalid table name: {table_name}",
-                    "records": []
-                }
-            
-            # Set default limit
-            if limit is None:
-                limit = self.DEFAULT_QUERY_LIMIT
-            
-            # Enforce max limit
-            if limit > self.MAX_RECORDS_PER_QUERY:
-                logger.warning(f"Limiting query to {self.MAX_RECORDS_PER_QUERY} records")
-                limit = self.MAX_RECORDS_PER_QUERY
-            
-            # Execute query
-            result = self.crud_service.select_records(
-                db=self.db,
-                table_name=table_name,
-                filters=filters or {},
-                limit=limit,
-                offset=offset
-            )
-            
-            return {
-                "success": True,
-                "table": table_name,
-                "records": result.get("records", []),
-                "total_records": result.get("total_records", 0),
-                "filters_applied": filters or {},
-                "limit": limit,
-                "offset": offset,
-                "timestamp": datetime.now().isoformat()
-            }
-            
-        except Exception as e:
-            logger.error(f"Error querying logs: {e}")
-            return {
-                "success": False,
-                "error": f"Database operation failed: {str(e)}",
-                "records": []
-            }
-    
     async def get_table_stats(self, table_name: Optional[str] = None) -> Dict[str, Any]:
         """Get table statistics and counts - replaces MCP get_table_stats tool"""
         try:

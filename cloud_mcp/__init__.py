@@ -4,7 +4,6 @@ Provides database operations without full MCP protocol overhead
 """
 
 from .server import (
-    query_logs,
     archive_records,
     delete_archived_records,
     get_table_stats,
@@ -14,7 +13,6 @@ from .server import (
 )
 
 __all__ = [
-    "query_logs",
     "archive_records", 
     "delete_archived_records",
     "get_table_stats",
