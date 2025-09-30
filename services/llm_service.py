@@ -270,6 +270,10 @@ class OpenAIService:
             → Analysis: COUNT query + ARCHIVE explicitly mentioned + date filter
             → MCP_TOOL: get_table_stats dsiactivities_archive {{"date_filter": "older_than_6_months"}}
 
+            "count of archived transactions older than 3 months"
+            → Analysis: COUNT query + ARCHIVE explicitly mentioned + date filter
+            → MCP_TOOL: get_table_stats dsitransactionlog_archive {{"date_filter": "older_than_3_months"}}
+
             "list transactions"
             → Analysis: LIST query + transactions table clearly identified + NO archive context
             → MCP_TOOL: get_table_stats dsitransactionlog {{}}
@@ -303,6 +307,10 @@ class OpenAIService:
             → Analysis: Context shows previous operation was on transactions + now count same table
             → MCP_TOOL: get_table_stats dsitransactionlog {{}}
 
+            Previous: "count of archived transactions" → User: "older than 20 days"
+            → Analysis: Context shows previous query was about ARCHIVE transactions + new date filter + PRESERVE archive context
+            → MCP_TOOL: get_table_stats dsitransactionlog_archive {{"date_filter": "older_than_20_days"}}
+
             Previous: "show transactions" → User: "count"
             → Analysis: Context shows previous query was about transactions + now count same table
             → MCP_TOOL: get_table_stats dsitransactionlog {{}}
@@ -314,6 +322,10 @@ class OpenAIService:
             Previous: "show archive records" → User: "for activities only"
             → Analysis: Context shows archive request + now specify activities archive
             → MCP_TOOL: get_table_stats dsiactivities_archive {{}}
+
+            Previous: "show archived transactions" → User: "older than 5 days"
+            → Analysis: Context shows archive transactions + new date filter + PRESERVE archive context
+            → MCP_TOOL: get_table_stats dsitransactionlog_archive {{"date_filter": "older_than_5_days"}}
 
             CONTEXTUAL ARCHIVE OPERATIONS (use conversation history):
             Previous: "activities older than 30 days" (got count result) → User: "archive them"
