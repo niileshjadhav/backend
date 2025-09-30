@@ -53,7 +53,7 @@ class ChatService:
                 region = region_service.get_default_region()
             elif not region_service.is_region_valid(region):
                 logger.error(f"Invalid region: {region}")
-                error_message = f"❌ Invalid Region\n\nRegion '{region}' is not valid. Available regions: {', '.join(region_service.get_valid_regions())}"
+                error_message = f"Invalid Region\n\nRegion '{region}' is not valid. Available regions: {', '.join(region_service.get_valid_regions())}"
                 return ChatResponse(
                     response=error_message,
                     response_type="error",
@@ -194,7 +194,7 @@ class ChatService:
                 
         except Exception as e:
             logger.error(f"Error in process_chat: {e}")
-            error_message = f"❌ System Error: {str(e)}\n\nThere is an issue in processing chat."
+            error_message = f"System Error: {str(e)}\n\nThere is an issue in processing chat."
             return ChatResponse(
                 response=error_message,
                 response_type="error",
@@ -323,7 +323,7 @@ class ChatService:
             # Safety check: if tool_used is None or empty, this should not happen with our new logic
             if not tool_used:
                 logger.error(f"_format_response_by_tool called with None/empty tool_used. This indicates an issue in the calling logic.")
-                error_message = "❌ Processing Error\n\nThere was an issue processing your request. Please try rephrasing it or contact support."
+                error_message = "Processing Error\n\nThere was an issue processing your request. Please try rephrasing it or contact support."
                 return ChatResponse(
                     response=error_message,
                     response_type="error",
@@ -358,10 +358,10 @@ class ChatService:
                 # Unknown or null tool - this should not happen with our new logic
                 if tool_used is None:
                     logger.error(f"_format_response_by_tool received None tool_used - this indicates a logic error in the calling code")
-                    error_message = f"❌ Processing Error\n\nThere was an issue processing your request. Please try rephrasing it."
+                    error_message = f"Processing Error\n\nThere was an issue processing your request. Please try rephrasing it."
                 else:
                     logger.warning(f"Unknown MCP tool: {tool_used}")
-                    error_message = f"❌ Unknown Operation\n\nThe system tried to use an unknown operation: {tool_used}. Please try rephrasing your request."
+                    error_message = f"Unknown Operation\n\nThe system tried to use an unknown operation: {tool_used}. Please try rephrasing your request."
                 
                 return ChatResponse(
                     response=error_message,
@@ -374,7 +374,7 @@ class ChatService:
                 
         except Exception as e:
             logger.error(f"Response formatting error: {e}")
-            error_message = f"❌ Processing Error: {str(e)}\n\nPlease try rephrasing your request."
+            error_message = f"Processing Error: {str(e)}\n\nPlease try rephrasing your request."
             return ChatResponse(
                 response=error_message,
                 response_type="error",
@@ -654,8 +654,8 @@ class ChatService:
                             table_name = llm_result.table_used
                             user_id = user_info.get("username", "admin")
                             
-                            response = f"📦 Archive Operation Completed - {region.upper()} Region\n\n"
-                            response += f"✅ Successfully archived {archived_count:,} records\n"
+                            response = f"Archive Operation Completed - {region.upper()} Region\n\n"
+                            response += f"Successfully archived {archived_count:,} records\n"
                             response += f"From: {table_name}\n"
                             response += f"To: {table_name}_archive\n"
                             response += f"Executed by: {user_id}\n\n"
@@ -692,7 +692,7 @@ class ChatService:
                             )
                         else:
                             error_msg = mcp_result.get("error", "Archive operation failed")
-                            response = f"❌ Archive Operation Failed\n\n{error_msg}"
+                            response = f"Archive Operation Failed\n\n{error_msg}"
                             
                             structured_content = self._create_error_structured_content(error_msg, region)
                             
@@ -713,8 +713,8 @@ class ChatService:
                             table_name = llm_result.table_used
                             user_id = user_info.get("username", "admin")
                             
-                            response = f"🗑️ Delete Operation Completed - {region.upper()} Region\n\n"
-                            response += f"✅ Successfully deleted {deleted_count:,} records\n"
+                            response = f"Delete Operation Completed - {region.upper()} Region\n\n"
+                            response += f"Successfully deleted {deleted_count:,} records\n"
                             response += f"From: {table_name}\n"
                             response += f"Executed by: {user_id}\n\n"
                             response += "Records have been permanently removed from the archive table."
@@ -750,7 +750,7 @@ class ChatService:
                             )
                         else:
                             error_msg = mcp_result.get("error", "Delete operation failed")
-                            response = f"❌ Delete Operation Failed\n\n{error_msg}"
+                            response = f"Delete Operation Failed\n\n{error_msg}"
                             
                             structured_content = self._create_error_structured_content(error_msg, region)
                             
@@ -949,7 +949,7 @@ class ChatService:
             if "CONFIRM ARCHIVE" in message_upper:
                 # This fallback should not be used as it can't reliably determine the intended table
                 return ChatResponse(
-                    response="❌ Archive Confirmation Failed\n\nCannot determine which table to archive. Please start a new archive operation by saying something like:\n• 'archive transactions older than 7 days'\n• 'archive activities older than 7 days'",
+                    response="Archive Confirmation Failed\n\nCannot determine which table to archive. Please start a new archive operation by saying something like:\n• 'archive transactions older than 7 days'\n• 'archive activities older than 7 days'",
                     response_type="error",
                     structured_content=self._create_error_structured_content(
                         "Cannot determine target table for archive operation. Please start a new operation.",
@@ -960,7 +960,7 @@ class ChatService:
             elif "CONFIRM DELETE" in message_upper:
                 # This fallback should not be used as it can't reliably determine the intended table
                 return ChatResponse(
-                    response="❌ Delete Confirmation Failed\n\nCannot determine which archived table to delete from. Please start a new delete operation by saying something like:\n• 'delete archived transactions older than 60 days'\n• 'delete archived activities older than 60 days'",
+                    response="Delete Confirmation Failed\n\nCannot determine which archived table to delete from. Please start a new delete operation by saying something like:\n• 'delete archived transactions older than 60 days'\n• 'delete archived activities older than 60 days'",
                     response_type="error",
                     structured_content=self._create_error_structured_content(
                         "Cannot determine target table for delete operation. Please start a new operation.",
@@ -1000,7 +1000,6 @@ class ChatService:
             
             # Limit total context length to avoid token limits
             context = "\n".join(conversation[-10:])  # Last 10 messages (5 exchanges)
-            logger.info(f"DEBUG: Built conversation context with {len(recent_logs)} logs: {context[:300]}...")
             
             if len(context) > 2000:  # Truncate if too long
                 context = context[-2000:]
@@ -1027,7 +1026,7 @@ class ChatService:
                 if not connected:
                     error_msg = f"Failed to connect to region {region}: {message}"
                     return ChatResponse(
-                        response=f"❌ Connection Error - {region.upper()} Region\n\n{error_msg}",
+                        response=f"Connection Error - {region.upper()} Region\n\n{error_msg}",
                         response_type="error",
                         structured_content=self._create_error_structured_content(error_msg, region)
                     )
@@ -1042,7 +1041,7 @@ class ChatService:
                 if not stats_result.get("success"):
                     error_msg = stats_result.get("error", "Failed to get statistics")
                     return ChatResponse(
-                        response=f"❌ Statistics Error - {region.upper()} Region\n\n{error_msg}",
+                        response=f"Statistics Error - {region.upper()} Region\n\n{error_msg}",
                         response_type="error",
                         structured_content=self._create_error_structured_content(error_msg, region)
                     )
@@ -1077,7 +1076,7 @@ class ChatService:
             logger.error(f"Error handling region status request: {e}")
             error_msg = f"Failed to retrieve region status: {str(e)}"
             return ChatResponse(
-                response=f"❌ Region Status Error\n\n{error_msg}",
+                response=f"Region Status Error\n\n{error_msg}",
                 response_type="error",
                 structured_content=self._create_error_structured_content(error_msg, region)
             )
@@ -1110,14 +1109,14 @@ class ChatService:
         if has_filter:
             # Show filtered count as primary when filters are applied
             if is_activity_transaction_archive:
-                response += f"Records: **{filtered_count:,}** (showing count only, not actual records)\n"
+                response += f"Records: **{filtered_count:,}**\n"
             else:
                 response += f"Records: **{filtered_count:,}**\n"
             response += f"Filter: Records {filter_description}\n"
         else:
             # Show total count when no filters are applied
             if is_activity_transaction_archive:
-                response += f"Total Records: **{filtered_count:,}** (showing count only, not actual records)\n"
+                response += f"Total Records: **{filtered_count:,}**\n"
             else:
                 response += f"Total Records: **{filtered_count:,}**\n"
 
@@ -1125,7 +1124,7 @@ class ChatService:
         structured_content = {
             "type": "stats_card",
             "title": f"Table Statistics",
-            "icon": "📊",
+            "icon": "",
             "table_name": table_name,
             "region": region.upper(),
             "stats": []
@@ -1160,7 +1159,7 @@ class ChatService:
         """Format query results response with structured content"""
         if not mcp_result.get("success"):
             error_msg = mcp_result.get("error", "Unknown error")
-            error_message = f"❌ Query Error - {region.upper()} Region\n\n{error_msg}"
+            error_message = f"Query Error - {region.upper()} Region\n\n{error_msg}"
             return ChatResponse(
                 response=error_message,
                 response_type="error",
@@ -1176,7 +1175,7 @@ class ChatService:
         response += f"**Total Records Found: {total_found:,}**\n\n"
 
         if total_found > 0:
-            response += f"Found **{total_found:,}** records (showing count only, not actual records)\n"
+            response += f"Found **{total_found:,}** records\n"
         else:
             response += "No matching records found.\n"
         
@@ -1184,7 +1183,7 @@ class ChatService:
         structured_content = {
             "type": "stats_card",
             "title": f"Table Statistics",
-            "icon": "�",
+            "icon": "",
             "table_name": table_name,
             "region": region.upper(),
             "stats": [
@@ -1223,13 +1222,13 @@ class ChatService:
                 archive_tables.append(table_data)
         
         # Build plain text response
-        response = f"📊 Database Statistics - {region.upper()} Region\n\n"
+        response = f"Database Statistics - {region.upper()} Region\n\n"
         
         # Main Tables Section
-        response += "🗂️ Main Tables:\n"
+        response += "Main Tables:\n"
         for table in main_tables:
             if table["error"]:
-                response += f"• {table['name']}: ❌ Error - {table['error']}\n"
+                response += f"• {table['name']}: Error - {table['error']}\n"
             else:
                 response += f"• {table['name']}: **{table['total_records']:,}** total records"
                 if table['age_based_count'] > 0:
@@ -1240,7 +1239,7 @@ class ChatService:
         response += "\n📦 Archive Tables:\n"
         for table in archive_tables:
             if table["error"]:
-                response += f"• {table['name']}: ❌ Error - {table['error']}\n"
+                response += f"• {table['name']}: Error - {table['error']}\n"
             else:
                 response += f"• {table['name']}: **{table['total_records']:,}** total records"
                 if table['age_based_count'] > 0:
@@ -1276,16 +1275,16 @@ class ChatService:
         
         # Check if this is a preview (confirmation needed)
         if mcp_result.get('requires_confirmation', False):
-            response = f"📦 Archive Preview - {region.upper()} Region\n\n"
-            response += f"Ready to Archive: 🟠 **{count:,} records** 🟠\n"
+            response = f"Archive Preview - {region.upper()} Region\n\n"
+            response += f"Ready to Archive: **{count:,} records** \n"
             response += f"From Table: {table_name}\n"
             response += f"To Table: {table_name}_archive\n\n"
-            response += "⚠️ This will move records from main table to archive table.\n"
+            response += f"This will move records from main table to archive table.\n"
             
             # Add safety information about default filters if no specific date filters were provided
             if not mcp_result.get('filters', {}).get('date_filter'):
-                response += "🛡️ Safety Filter Applied: Only records older than 7 days will be archived.\n"
-            
+                response += "Safety Filter Applied: Only records older than 7 days will be archived.\n"
+
             response += "Click 'CONFIRM ARCHIVE' to proceed or 'CANCEL' to abort."
             
             # Structured content for confirmation
@@ -1299,7 +1298,7 @@ class ChatService:
                     f"Ready to Archive: {count:,} records",
                     f"From Table: {table_name}",
                     f"To Table: {table_name}_archive",
-                    "⚠️ This will move records from main table to archive table.",
+                    "This will move records from main table to archive table.",
                     "Click 'CONFIRM ARCHIVE' to proceed or 'CANCEL' to abort."
                 ]
             }
@@ -1321,8 +1320,8 @@ class ChatService:
         
         # Handle case where there are no records to archive
         if count == 0:
-            response = f"📦 Archive Result - {region.upper()} Region\n\n"
-            response += f"✅ No records found matching the criteria\n"
+            response = f"Archive Result - {region.upper()} Region\n\n"
+            response += f"No records found matching the criteria\n"
             response += f"Table: {table_name}\n\n"
             response += "No archive operation was needed."
             
@@ -1348,8 +1347,8 @@ class ChatService:
         
         # This is the actual result
         if mcp_result.get("success"):
-            response = f"📦 Archive Operation Completed - {region.upper()} Region\n\n"
-            response += f"✅ Successfully archived {count:,} records\n"
+            response = f"Archive Operation Completed - {region.upper()} Region\n\n"
+            response += f"Successfully archived {count:,} records\n"
             response += f"From: {table_name}\n"
             response += f"To: {table_name}_archive\n\n"
             response += "Records have been moved from the main table to the archive table."
@@ -1367,7 +1366,7 @@ class ChatService:
             }
         else:
             error_msg = mcp_result.get("error", "Archive failed")
-            response = f"❌ Archive Error - {region.upper()} Region\n\n{error_msg}"
+            response = f"Archive Error - {region.upper()} Region\n\n{error_msg}"
             structured_content = self._create_error_structured_content(error_msg, region)
         
         return ChatResponse(
@@ -1383,10 +1382,10 @@ class ChatService:
         
         # Check if this is a preview (confirmation needed)
         if mcp_result.get('requires_confirmation', False):
-            response = f"🗑️ Delete Preview - {region.upper()} Region\n\n"
-            response += f"Ready to Delete: 🔴 **{count:,} records** 🔴\n"
+            response = f"Delete Preview - {region.upper()} Region\n\n"
+            response += f"Ready to Delete: **{count:,} records**\n"
             response += f"From Table: {table_name}\n\n"
-            response += "🚨 WARNING: THIS WILL PERMANENTLY DELETE RECORDS 🚨\n"
+            response += "WARNING: THIS WILL PERMANENTLY DELETE RECORDS\n"
             
             # Add safety information about default filters if no specific date filters were provided
             if not mcp_result.get('filters', {}).get('date_filter'):
@@ -1404,7 +1403,7 @@ class ChatService:
                 "details": [
                     f"Ready to Delete: {count:,} records",
                     f"From Table: {table_name}",
-                    "🚨 WARNING: THIS WILL PERMANENTLY DELETE RECORDS 🚨",
+                    "WARNING: THIS WILL PERMANENTLY DELETE RECORDS",
                     "Type 'CONFIRM DELETE' to proceed or 'CANCEL' to abort."
                 ]
             }
@@ -1426,8 +1425,8 @@ class ChatService:
         
         # Handle case where there are no records to delete
         if count == 0:
-            response = f"🗑️ Delete Result - {region.upper()} Region\n\n"
-            response += f"✅ No records found matching the criteria\n"
+            response = f"Delete Result - {region.upper()} Region\n\n"
+            response += f"No records found matching the criteria\n"
             response += f"Table: {table_name}\n\n"
             response += "No delete operation was needed."
             
@@ -1453,8 +1452,8 @@ class ChatService:
         
         # This is the actual result
         if mcp_result.get("success"):
-            response = f"🗑️ Delete Operation Completed - {region.upper()} Region\n\n"
-            response += f"✅ Successfully deleted {count:,} records\n"
+            response = f"Delete Operation Completed - {region.upper()} Region\n\n"
+            response += f"Successfully deleted {count:,} records\n"
             response += f"From: {table_name}\n\n"
             response += "Records have been permanently removed."
             
@@ -1471,7 +1470,7 @@ class ChatService:
             }
         else:
             error_msg = mcp_result.get("error", "Delete failed")
-            response = f"❌ Delete Error - {region.upper()} Region\n\n{error_msg}"
+            response = f"Delete Error - {region.upper()} Region\n\n{error_msg}"
             structured_content = self._create_error_structured_content(error_msg, region)
         
         return ChatResponse(
@@ -1484,7 +1483,7 @@ class ChatService:
     def _format_health_response(self, mcp_result: dict, region: str) -> ChatResponse:
         """Format health check response"""
         if mcp_result.get("success"):
-            response = f"✅ System Health Check - {region.upper()} Region\n\n"
+            response = f"System Health Check - {region.upper()} Region\n\n"
             response += "All database connections and services are operational."
             
             structured_content = {
@@ -1499,7 +1498,7 @@ class ChatService:
             }
         else:
             error_msg = mcp_result.get("error", "Health check failed")
-            response = f"❌ System Health Issues - {region.upper()} Region\n\n{error_msg}"
+            response = f"System Health Issues - {region.upper()} Region\n\n{error_msg}"
             structured_content = self._create_error_structured_content(error_msg, region)
         
         return ChatResponse(
@@ -1513,7 +1512,7 @@ class ChatService:
         """Format region status response"""
         if not mcp_result.get("success"):
             error_msg = mcp_result.get("error", "Failed to get region status")
-            response = f"❌ Region Status Error\n\n{error_msg}"
+            response = f"Region Status Error\n\n{error_msg}"
             return ChatResponse(
                 response=response,
                 response_type="error",
@@ -1530,7 +1529,7 @@ class ChatService:
         total_regions = len(available_regions)
         connected_count = len(connected_regions)
         
-        response = f"🌐 Region Status Information\n\n"
+        response = f"Region Status Information\n\n"
         
         # Main summary sentence
         if connected_count == 0:
@@ -1545,7 +1544,7 @@ class ChatService:
         # Current region info
         if current_region:
             is_connected = connection_status.get(current_region, False)
-            connection_text = "✅ Connected" if is_connected else "❌ Disconnected"
+            connection_text = "Connected" if is_connected else "Disconnected"
             response += f"**Active Region:** {current_region.upper()} ({connection_text})\n"
         else:
             response += f"**Active Region:** None (using default: {default_region.upper()})\n"
@@ -1558,7 +1557,7 @@ class ChatService:
         structured_content = {
             "type": "region_status_card",
             "title": "Region Status",
-            "icon": "🌐",
+            "icon": "",
             "current_region": current_region,
             "default_region": default_region,
             "available_regions": available_regions,
@@ -1646,7 +1645,7 @@ class ChatService:
         return {
             "type": "conversational_card",
             "title": "AI Assistant Response",
-            "icon": "🤖",
+            "icon": "",
             "region": region.upper(),
             "user_role": user_role,
             "content": response_text,
@@ -1662,7 +1661,7 @@ class ChatService:
         return {
             "type": "error_card",
             "title": "System Error",
-            "icon": "❌",
+            "icon": "",
             "region": region.upper() if region else "UNKNOWN",
             "error_message": error_message,
             "suggestions": [

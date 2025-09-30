@@ -34,14 +34,14 @@ try:
         updated_tables = inspector.get_table_names()
         still_missing = [t for t in required_tables if t not in updated_tables]
         if still_missing:
-            logger.error(f"❌ Failed to create tables: {still_missing}")
+            logger.error(f"Failed to create tables: {still_missing}")
         else:
-            logger.info("✅ All required tables now present")
+            logger.info("All required tables now present")
     else:
-        logger.info("✅ All required tables already exist - skipping creation")
+        logger.info("All required tables already exist - skipping creation")
         
 except Exception as e:
-    logger.error(f"❌ Database table verification/creation failed: {e}")
+    logger.error(f"Database table verification/creation failed: {e}")
     raise
 
 @asynccontextmanager

@@ -34,18 +34,142 @@ class OpenAIService:
             logger.error(f"Failed to initialize OpenAI service: {e}")
             raise
     
-    async def parse_with_enhanced_tools(self, user_message: str, conversation_context: Optional[str] = None) -> Optional[Any]:
-        """Enhanced LLM parsing that always returns MCP tool calls for database operations"""
-        try:
-            # Process through LLM for context-aware results
+    def _extract_context_info(self, conversation_context: Optional[str] = None) -> Dict[str, Any]:
+        """Extract table name and filters from conversation context"""
+        context_info = {
+            "last_table": None,
+            "last_filters": {},
+            "last_operation": None
+        }
+        
+        if not conversation_context:
+            return context_info
             
-            # Enhanced prompt with better dynamic understanding and conversation context
+        try:
+            # Look for the most recent table reference
+            context_lower = conversation_context.lower()
+            
+            # Check for explicit table names (most recent wins)
+            table_mentions = []
+            for table in ["dsitransactionlog_archive", "dsiactivities_archive", "dsitransactionlog", "dsiactivities"]:
+                if table in context_lower:
+                    # Find the position of the last mention
+                    last_pos = context_lower.rfind(table)
+                    table_mentions.append((last_pos, table))
+            
+            # Sort by position (most recent first)
+            if table_mentions:
+                table_mentions.sort(reverse=True)
+                context_info["last_table"] = table_mentions[0][1]
+            
+            # Extract common filter patterns from context
+            if "older than" in context_lower:
+                import re
+                # Look for "older than X days/months/years"
+                pattern = r"older than (\d+) (day|month|year)s?"
+                match = re.search(pattern, context_lower)
+                if match:
+                    number, unit = match.groups()
+                    context_info["last_filters"] = {"date_filter": f"older_than_{number}_{unit}s"}
+            
+            # Extract operation type
+            if "archive" in context_lower:
+                context_info["last_operation"] = "archive"
+            elif "count" in context_lower or "statistics" in context_lower:
+                context_info["last_operation"] = "stats"
+            elif "delete" in context_lower:
+                context_info["last_operation"] = "delete"
+                            
+        except Exception as e:
+            logger.warning(f"Error extracting context info: {e}")
+            
+        return context_info
+
+    def _determine_table_from_context(self, user_message: str, context_info: Dict[str, Any]) -> str:
+        """Determine table name using message content and context"""
+        user_msg_lower = user_message.lower()
+        
+        # First priority: Explicit full table mentions in current message
+        if "dsitransactionlog_archive" in user_msg_lower:
+            return "dsitransactionlog_archive"
+        elif "dsiactivities_archive" in user_msg_lower:
+            return "dsiactivities_archive"
+        elif "dsitransactionlog" in user_msg_lower and "archive" not in user_msg_lower:
+            return "dsitransactionlog"
+        elif "dsiactivities" in user_msg_lower and "archive" not in user_msg_lower:
+            return "dsiactivities"
+        
+        # Second priority: Generic table type mentions - preserve archive context if exists
+        last_table = context_info.get("last_table", "")
+        
+        if "transaction" in user_msg_lower:
+            # If previous context was archive table, preserve it
+            if "archive" in last_table or "archive" in user_msg_lower:
+                return "dsitransactionlog_archive"
+            return "dsitransactionlog"
+        elif "activit" in user_msg_lower:
+            # If previous context was archive table, preserve it
+            if "archive" in last_table or "archive" in user_msg_lower:
+                return "dsiactivities_archive"
+            return "dsiactivities"
+        
+        # Third priority: Use context from previous operations (preserve exact table)
+        if context_info.get("last_table"):
+            return context_info["last_table"]
+        
+        # Default fallback
+        return "dsiactivities"
+
+    def _determine_filters_from_context(self, user_message: str, context_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Determine filters using message content and context"""
+        user_msg_lower = user_message.lower()
+        filters = {}
+        
+        # First priority: Explicit filters in current message
+        import re
+        
+        # Look for date patterns in current message
+        date_patterns = [
+            (r"older than (\d+) months?", lambda m: {"date_filter": f"older_than_{m.group(1)}_months"}),
+            (r"older than (\d+) days?", lambda m: {"date_filter": f"older_than_{m.group(1)}_days"}),
+            (r"older than (\d+) years?", lambda m: {"date_filter": f"older_than_{m.group(1)}_years"}),
+            (r"from last year", lambda m: {"date_filter": "from_last_year"}),
+            (r"from last month", lambda m: {"date_filter": "from_last_month"}),
+            (r"recent|latest", lambda m: {"date_filter": "recent"})
+        ]
+        
+        for pattern, filter_func in date_patterns:
+            match = re.search(pattern, user_msg_lower)
+            if match:
+                filters.update(filter_func(match))
+                break
+        
+        # If no explicit filters in message, check if we should inherit from context
+        if not filters and context_info.get("last_filters"):
+            # Inherit filters for follow-up operations like "archive them", "count", etc.
+            follow_up_keywords = ["them", "those", "it", "archive", "delete", "count"]
+            if any(keyword in user_msg_lower for keyword in follow_up_keywords):
+                filters = context_info["last_filters"].copy()
+        
+        return filters
+
+    async def parse_with_enhanced_tools(self, user_message: str, conversation_context: Optional[str] = None) -> Optional[Any]:
+        """Enhanced LLM parsing with separate table and filter context tracking"""
+        try:
+            # Extract context information
+            context_info = self._extract_context_info(conversation_context)
+            
+            # Process through LLM for context-aware results
             context_section = ""
             if conversation_context and "Previous conversation:" in conversation_context:
                 context_section = f"""
 
             Recent Conversation Context:
             {conversation_context}
+
+            Previous Table: {context_info.get('last_table', 'None')}
+            Previous Filters: {context_info.get('last_filters', {})}
+            Previous Operation: {context_info.get('last_operation', 'None')}
 
             This helps understand references like "show me more", "archive those records", "delete them", etc.
             """
@@ -123,6 +247,7 @@ class OpenAIService:
             - POLICY/EXPLANATION QUESTIONS: "what is archive policy", "how does archiving work", "what does archive mean" → Return None (conversational)
             - Table Selection: Use main tables (dsiactivities, dsitransactionlog) unless specifically asked for archived data
             - Context-aware parsing: If user says "show me more", "archive those", "archive them", "delete them", "for then X days", "what about Y months", refer to previous conversation
+            - CONTEXT PRESERVATION: If previous query was about archive tables, follow-up date queries (older than X, from Y) should STAY on archive tables!
             - Date filters: Parse natural language dates
                - "older than 10 months" → {{"date_filter": "older_than_10_months"}}
                - "older than 12 months" → {{"date_filter": "older_than_12_months"}}
@@ -134,15 +259,19 @@ class OpenAIService:
 
             CLEAR REQUESTS (proceed with MCP_TOOL):
             "count of activities older than 12 months"
-            → Analysis: COUNT query + date filter + specific table clearly identified
+            → Analysis: COUNT query + date filter + specific table clearly identified + NO archive context
             → MCP_TOOL: get_table_stats dsiactivities {{"date_filter": "older_than_12_months"}}
 
             "show activities from last month" 
-            → Analysis: SHOW query + activities table clearly identified
+            → Analysis: SHOW query + activities table clearly identified + NO archive context
             → MCP_TOOL: get_table_stats dsiactivities {{"date_filter": "from_last_month"}}
 
+            "count of archived activities older than 6 months"
+            → Analysis: COUNT query + ARCHIVE explicitly mentioned + date filter
+            → MCP_TOOL: get_table_stats dsiactivities_archive {{"date_filter": "older_than_6_months"}}
+
             "list transactions"
-            → Analysis: LIST query + transactions table clearly identified
+            → Analysis: LIST query + transactions table clearly identified + NO archive context
             → MCP_TOOL: get_table_stats dsitransactionlog {{}}
 
             "archive activities older than 12 months"
@@ -319,11 +448,11 @@ class OpenAIService:
                 
                 # Try to extract operation intent and provide fallback response for common cases
                 if self._is_archive_request(user_message):
-                    # Create fallback archive operation
+                    # Create fallback archive operation with context
                     logger.info(f"Providing fallback archive operation for: '{user_message}'")
-                    return await self._create_fallback_archive_operation(user_message)
+                    return await self._create_fallback_archive_operation(user_message, conversation_context)
                 elif self._is_stats_request(user_message):
-                    # Create fallback stats operation
+                    # Create fallback stats operation with context
                     logger.info(f"Providing fallback stats operation for: '{user_message}'")
                     return await self._create_fallback_stats_operation(user_message, conversation_context)
                 
@@ -394,7 +523,6 @@ class OpenAIService:
                             "• **Archive Data:** \"Archive old records\" or \"Archive activities older than 7 days\"\n"
                             "• **Delete Data:** \"Delete archived records\" (with proper date filters)\n"
                             "• **System Info:** \"Health check\" or \"Database status\"\n\n"
-                            "**Example:** \"Show statistics for dsiactivities table\""
                         )
                         self.is_database_operation = False
                         self.tool_used = None
@@ -415,12 +543,11 @@ class OpenAIService:
                         self.is_clarification_request = True
                         self.clarification_message = (
                             f"Please specify one of the following valid tables:\n\n"
-                            "**Available Tables:**\n"
-                            "• `dsiactivities` - Current activity logs\n"
-                            "• `dsitransactionlog` - Current transaction logs\n"
-                            "• `dsiactivities_archive` - Archived activity logs\n"
-                            "• `dsitransactionlog_archive` - Archived transaction logs\n\n"
-                            "**Example:** \"Show statistics for dsiactivities table\""
+                            "Available Tables:\n\n"
+                            "• dsiactivities - Current activity logs\n"
+                            "• dsitransactionlog - Current transaction logs\n"
+                            "• dsiactivities_archive - Archived activity logs\n"
+                            "• dsitransactionlog_archive - Archived transaction logs\n\n"
                         )
                         self.is_database_operation = False
                         self.tool_used = None
@@ -433,7 +560,6 @@ class OpenAIService:
             try:
                 filters_data = json.loads(filters_str) if filters_str else {}
                 filters = filters_data if isinstance(filters_data, dict) else {}
-                logger.info(f"DEBUG: Parsed filters from LLM response: '{filters_str}' -> {filters}")
             except json.JSONDecodeError as e:
                 logger.warning(f"Failed to parse filters JSON '{filters_str}': {e}")
                 # Create error result for invalid filters
@@ -447,7 +573,6 @@ class OpenAIService:
                             "• \"records older than 10 months\"\n"
                             "• \"data from last year\"\n"
                             "• \"recent activities\"\n\n"
-                            "**Example:** \"Show activities older than 7 days\""
                         )
                         self.is_database_operation = False
                         self.tool_used = None
@@ -502,18 +627,24 @@ class OpenAIService:
             else:
                 logger.warning(f"Unknown MCP tool or missing table: tool={tool_name}, table={table_name}")
             
-            # Create result object with MCP data
+            # Create result object with MCP data and context preservation
             class EnhancedLLMResult:
-                def __init__(self, tool, table, filters, mcp_result):
+                def __init__(self, tool, table, filters, mcp_result, context_preserved=False):
                     self.tool_used = tool
                     self.table_used = table
                     self.filters = filters
                     self.mcp_result = mcp_result
                     self.is_database_operation = True
                     self.operation = None  # Will be handled by MCP result
-                    logger.info(f"DEBUG: Created EnhancedLLMResult with filters: {filters}")
+                    self.context_preserved = context_preserved
+                    # Store for future context reference
+                    self.context_info = {
+                        "table": table,
+                        "filters": filters,
+                        "operation": tool
+                    }
             
-            result_obj = EnhancedLLMResult(tool_name, table_name, filters, mcp_result)
+            result_obj = EnhancedLLMResult(tool_name, table_name, filters, mcp_result, context_preserved=False)
             return result_obj
             
         except Exception as e:
@@ -547,94 +678,88 @@ class OpenAIService:
         stats_keywords = ['show', 'count', 'list', 'display', 'statistics', 'stats', 'how many']
         return any(keyword in message_lower for keyword in stats_keywords)
 
-    async def _create_fallback_archive_operation(self, user_message: str) -> Any:
-        """Create fallback archive operation when LLM format parsing fails"""
+    async def _create_fallback_archive_operation(self, user_message: str, conversation_context: str = None) -> Any:
+        """Create fallback archive operation with separate table and filter context handling"""
         try:
             from cloud_mcp.server import archive_records
             
-            # Determine table - default to activities if not specified
-            table_name = "dsiactivities"
-            if "transaction" in user_message.lower():
-                table_name = "dsitransactionlog"
+            # Extract context information
+            context_info = self._extract_context_info(conversation_context)
             
-            # Use empty filters - system will apply default safety filters
-            filters = {}
+            # Determine table using improved context-awareness
+            table_name = self._determine_table_from_context(user_message, context_info)
             
+            # Determine filters using context-awareness
+            filters = self._determine_filters_from_context(user_message, context_info)
+                        
             # Execute archive operation
             mcp_result = await archive_records(table_name, filters, "system")
             
-            # Create result object
+            # Create result object with context preservation indicator
             class EnhancedLLMResult:
-                def __init__(self, tool, table, filters, mcp_result):
+                def __init__(self, tool, table, filters, mcp_result, context_preserved=False):
                     self.tool_used = tool
                     self.table_used = table
                     self.filters = filters
                     self.mcp_result = mcp_result
                     self.is_database_operation = True
                     self.operation = None
+                    self.context_preserved = context_preserved
+                    # Store for future context reference
+                    self.context_info = {
+                        "table": table,
+                        "filters": filters,
+                        "operation": tool
+                    }
             
-            return EnhancedLLMResult("archive_records", table_name, filters, mcp_result)
+            context_used = bool(context_info.get('last_table'))
+            return EnhancedLLMResult("archive_records", table_name, filters, mcp_result, context_used)
             
         except Exception as e:
             logger.error(f"Fallback archive operation failed: {e}")
             return None
 
     async def _create_fallback_stats_operation(self, user_message: str, conversation_context: str = None) -> Any:
-        """Create fallback stats operation when LLM format parsing fails"""
+        """Create fallback stats operation with separate table and filter context handling"""
         try:
             from cloud_mcp.server import get_table_stats
             
-            # Determine table using context-awareness
-            table_name = "dsiactivities"  # Default fallback
+            # Extract context information
+            context_info = self._extract_context_info(conversation_context)
             
-            # First, check if the current message explicitly mentions a table
-            if "transaction" in user_message.lower():
-                table_name = "dsitransactionlog"
-            elif "archive" in user_message.lower():
-                if "transaction" in user_message.lower():
-                    table_name = "dsitransactionlog_archive"
-                else:
-                    table_name = "dsiactivities_archive"
-            # If current message doesn't specify table, use conversation context
-            elif conversation_context:
-                # Look for the most recent table reference in conversation history
-                if "dsitransactionlog" in conversation_context.lower():
-                    # Check if it's archive context
-                    if "archive" in conversation_context.lower() and "dsitransactionlog_archive" in conversation_context.lower():
-                        table_name = "dsitransactionlog_archive"
-                    else:
-                        table_name = "dsitransactionlog"
-                elif "transaction" in conversation_context.lower():
-                    table_name = "dsitransactionlog"
-                elif "dsiactivities_archive" in conversation_context.lower():
-                    table_name = "dsiactivities_archive"
-                elif "archive" in conversation_context.lower() and "activities" in conversation_context.lower():
-                    table_name = "dsiactivities_archive"
-                # If context suggests activities, keep the default
-                
-            logger.info(f"DEBUG: Fallback stats operation determined table '{table_name}' from message '{user_message}' and context: {conversation_context[:200] if conversation_context else 'None'}")
+            # Determine table using improved context-awareness
+            table_name = self._determine_table_from_context(user_message, context_info)
             
-            # Use empty filters for general stats
-            filters = {}
-            
+            # Determine filters using context-awareness
+            filters = self._determine_filters_from_context(user_message, context_info)
+                        
             # Execute stats operation
             mcp_result = await get_table_stats(table_name, filters, "system")
             
-            # Create result object
+            # Create result object with context preservation indicator
             class EnhancedLLMResult:
-                def __init__(self, tool, table, filters, mcp_result):
+                def __init__(self, tool, table, filters, mcp_result, context_preserved=False):
                     self.tool_used = tool
                     self.table_used = table
                     self.filters = filters
                     self.mcp_result = mcp_result
                     self.is_database_operation = True
                     self.operation = None
+                    self.context_preserved = context_preserved
+                    # Store for future context reference
+                    self.context_info = {
+                        "table": table,
+                        "filters": filters,
+                        "operation": tool
+                    }
             
-            return EnhancedLLMResult("get_table_stats", table_name, filters, mcp_result)
+            context_used = bool(context_info.get('last_table'))
+            return EnhancedLLMResult("get_table_stats", table_name, filters, mcp_result, context_used)
             
         except Exception as e:
             logger.error(f"Fallback stats operation failed: {e}")
             return None
+        
     async def _handle_clarification_request(self, llm_response: str, original_message: str) -> Any:
         """Handle cases where LLM needs clarification about table names or filters"""
         try:
@@ -644,32 +769,29 @@ class OpenAIService:
                 clarification_message = (
                     "I need clarification about which table you'd like to work with. "
                     "Please specify one of the following:\n\n"
-                    "**Available Tables:**\n"
-                    "• `dsiactivities` - Current activity logs\n"
-                    "• `dsitransactionlog` - Current transaction logs\n"
-                    "• `dsiactivities_archive` - Archived activity logs\n"
-                    "• `dsitransactionlog_archive` - Archived transaction logs\n\n"
-                    "**Example:** \"Show statistics for dsiactivities table\" or \"Archive records from dsitransactionlog\""
+                    "Available Tables:\n"
+                    "• dsiactivities - Current activity logs\n"
+                    "• dsitransactionlog - Current transaction logs\n"
+                    "• dsiactivities_archive - Archived activity logs\n"
+                    "• dsitransactionlog_archive - Archived transaction logs\n\n"
                 )
             elif "CLARIFY_FILTERS_NEEDED" in llm_response:
                 clarification_message = (
                     "I need more specific information about the date or filter criteria. "
                     "Please provide more details:\n\n"
-                    "📅 **Date Filter Examples:**\n"
+                    "Date Filter Examples:\n"
                     "• \"records older than 10 months\"\n"
                     "• \"data from last year\"\n"
                     "• \"recent activities\"\n"
-                    "**Example:** \"Show activities older than 12 months\""
                 )
             elif "CLARIFY_REQUEST_NEEDED" in llm_response:
                 clarification_message = (
                     "I'm not sure what you'd like me to do. Could you please clarify your request?\n\n"
-                    "💡 **I can help you with:**\n"
-                    "• **View Data:** \"Show table statistics\" or \"Count activities\"\n"
-                    "• **Archive Data:** \"Archive old records\" or \"Archive activities older than 7 days\"\n"
-                    "• **Delete Data:** \"Delete archived records\" (with proper date filters)\n"
-                    "• **System Info:** \"Health check\" or \"Database status\"\n\n"
-                    "**Example:** \"Archive transactions older than 7 days\""
+                    "I can help you with:\n\n"
+                    "• View Data: \"Show table statistics\" or \"Count activities\"\n"
+                    "• Archive Data: \"Archive old records\" or \"Archive activities older than 7 days\"\n"
+                    "• Delete Data: \"Delete archived records\" (with proper date filters)\n"
+                    "• System Info: \"Health check\" or \"Database status\"\n\n"
                 )
             
             # Create a clarification result object
@@ -899,19 +1021,14 @@ class OpenAIService:
             return {
                 "response": f"I'm experiencing some technical difficulties{error_msg}, but I can still assist with your database request! "
                            "Could you be more specific about what you'd like to see?\n\n"
-                           "📊 **Available Tables:**\n"
-                           "• `dsiactivities` - Current activity logs\n"
-                           "• `dsitransactionlog` - Current transaction logs\n"
-                           "• `dsiactivities_archive` - Archived activity logs\n"
-                           "• `dsitransactionlog_archive` - Archived transaction logs\n\n"
-                           "**Example specific requests:**\n"
-                           "• \"Show statistics for dsiactivities table\"\n"
-                           "• \"Count activities older than 30 days\"\n"
-                           "• \"Archive transactions from last year\"",
+                           "Available Tables:\n\n"
+                           "• dsiactivities - Current activity logs\n"
+                           "• dsitransactionlog - Current transaction logs\n"
+                           "• dsiactivities_archive - Archived activity logs\n"
+                           "• dsitransactionlog_archive - Archived transaction logs\n\n",
                 "suggestions": [
                     "Show activities statistics",
                     "Which region is connected?",
-                    "Show archive statistics", 
                     "Database health check"
                 ],
                 "source": "fallback"

@@ -111,10 +111,10 @@ async def confirm_operation(
             )
             
             if result["success"]:
-                response_text = f"✅ Archive Completed in {confirmation.region.upper()}\n\n{result['records_archived']:,} records successfully archived from {confirmation.table} to {confirmation.table}_archive."
+                response_text = f"Archive Completed in {confirmation.region.upper()}\n\n{result['records_archived']:,} records successfully archived from {confirmation.table} to {confirmation.table}_archive."
                 response_type = "operation_success"
             else:
-                response_text = f"❌ Archive failed: {result.get('error', 'Unknown error')}"
+                response_text = f"Archive failed: {result.get('error', 'Unknown error')}"
                 response_type = "error"
                 
         elif confirmation.operation == "DELETE" and confirmation.confirmed:
@@ -127,18 +127,18 @@ async def confirm_operation(
             )
             
             if result["success"]:
-                response_text = f"✅ Delete Completed in {confirmation.region.upper()}\n\n{result['records_deleted']:,} records permanently deleted from {confirmation.table}_archive."
+                response_text = f"Delete Completed in {confirmation.region.upper()}\n\n{result['records_deleted']:,} records permanently deleted from {confirmation.table}_archive."
                 response_type = "operation_success"
             else:
-                response_text = f"❌ Delete failed: {result.get('error', 'Unknown error')}"
+                response_text = f"Delete failed: {result.get('error', 'Unknown error')}"
                 response_type = "error"
         
         elif not confirmation.confirmed:
-            response_text = f"❌ Operation Cancelled\n\n{confirmation.operation} operation for {confirmation.table} in {confirmation.region.upper()} was cancelled by user."
+            response_text = f"Operation Cancelled\n\n{confirmation.operation} operation for {confirmation.table} in {confirmation.region.upper()} was cancelled by user."
             response_type = "operation_cancelled"
         
         else:
-            response_text = f"❌ Unsupported Operation\n\nOperation '{confirmation.operation}' is not supported for confirmation."
+            response_text = f"Unsupported Operation\n\nOperation '{confirmation.operation}' is not supported for confirmation."
             response_type = "error"
         
         # Cleanup session
