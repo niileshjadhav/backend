@@ -67,6 +67,7 @@ class OpenAIService:
             2. archive_records - Use for archiving old records to archive tables
             3. delete_archived_records - Use for deleting records from archive tables
             4. health_check - Use for system health/status checks
+            5. region_status - Use for region connection status and current region information
 
             CONTEXT HANDLING - CRITICAL:
             - ALWAYS examine conversation history to understand incomplete requests
@@ -74,8 +75,17 @@ class OpenAIService:
             - If user says "archive them", "delete them", "archive those records" - use context to determine BOTH table AND filters from previous query
             - PRESERVE BOTH TABLE AND FILTERS: Extract exact table name and date filters from previous query
             - Look for previous queries to understand what table/operation user is referring to
-            - Context patterns: "for then", "what about", "how about", "and for", "also for", "archive them", "delete them", "those records"
+            - Context patterns: "for then", "what about", "how about", "and for", "also for", "archive them", "delete them", "those records", "count", "count them", "show count"
             - Example: Previous "activities older than 30 days" → "archive them" = MUST use both "dsiactivities" table AND "older_than_30_days" filter
+            - Example: Previous "archive transactions" → "count" = MUST use "dsitransactionlog" table (same table as previous operation)
+            - Example: Previous "transactions older than 10 days" → "count" = MUST use "dsitransactionlog" table (same table as previous operation)
+            
+            TABLE CONTINUITY RULES - CRITICAL:
+            - If previous operation was on "dsitransactionlog" → any follow-up "count", "show", "list" should ALSO use "dsitransactionlog"
+            - If previous operation was on "dsiactivities" → any follow-up "count", "show", "list" should ALSO use "dsiactivities"
+            - Look for "[Context: Previous operation on table: TABLE_NAME]" markers in conversation history
+            - When user says just "count" without specifying table, use the MOST RECENT table from conversation history
+            - DO NOT default to "dsiactivities" if recent context shows operations on "dsitransactionlog"
             
             CONFIRMATION HANDLING:
             If this is a confirmation (contains "CONFIRM ARCHIVE" or "CONFIRM DELETE"):
@@ -109,6 +119,7 @@ class OpenAIService:
             - DATA QUERIES: COUNT/HOW MANY/STATISTICS about records → ALWAYS use get_table_stats
             - DATA OPERATIONS: "show activities", "list transactions", "display archive records" → ALWAYS use get_table_stats (show counts, not records)
             - GENERAL DATABASE STATS (e.g., "show table statistics", "database statistics") → use get_table_stats with NO table name (leave empty)
+            - REGION QUERIES: "which region", "current region", "region status", "connected regions", "what region" → ALWAYS use region_status
             - POLICY/EXPLANATION QUESTIONS: "what is archive policy", "how does archiving work", "what does archive mean" → Return None (conversational)
             - Table Selection: Use main tables (dsiactivities, dsitransactionlog) unless specifically asked for archived data
             - Context-aware parsing: If user says "show me more", "archive those", "archive them", "delete them", "for then X days", "what about Y months", refer to previous conversation
@@ -138,9 +149,17 @@ class OpenAIService:
             → Analysis: ARCHIVE operation + date filter + activities table clearly identified
             → MCP_TOOL: archive_records dsiactivities {{"date_filter": "older_than_12_months"}}
 
+            "which region is connected now" or "current region status" or "what region"
+            → Analysis: REGION STATUS query + region connection information needed
+            → MCP_TOOL: region_status  {{}}
+
             "show table statistics" or "database statistics"
             → Analysis: GENERAL STATISTICS query + no specific table needed
             → MCP_TOOL: get_table_stats  {{}}
+
+            "which region is connected" or "current region" or "region status"
+            → Analysis: REGION STATUS query + region information needed
+            → MCP_TOOL: region_status  {{}}
 
             CONTEXTUAL FOLLOW-UPS (use conversation history):
             Previous: "activities older than 15 days" → User: "for then 12 days"
@@ -150,6 +169,18 @@ class OpenAIService:
             Previous: "count transactions" → User: "what about 30 days old"
             → Analysis: Context shows previous query was about transactions + new filter
             → MCP_TOOL: get_table_stats dsitransactionlog {{"date_filter": "older_than_30_days"}}
+
+            Previous: "archive transactions older than 30 days" → User: "count"
+            → Analysis: Context shows previous operation was on transactions + now count same table
+            → MCP_TOOL: get_table_stats dsitransactionlog {{}}
+
+            Previous: "show transactions" → User: "count"
+            → Analysis: Context shows previous query was about transactions + now count same table
+            → MCP_TOOL: get_table_stats dsitransactionlog {{}}
+
+            Previous: "transactions statistics" → User: "count them"
+            → Analysis: Context shows previous query was about transactions + now count same table
+            → MCP_TOOL: get_table_stats dsitransactionlog {{}}
 
             Previous: "show archive records" → User: "for activities only"
             → Analysis: Context shows archive request + now specify activities archive
@@ -294,7 +325,7 @@ class OpenAIService:
                 elif self._is_stats_request(user_message):
                     # Create fallback stats operation
                     logger.info(f"Providing fallback stats operation for: '{user_message}'")
-                    return await self._create_fallback_stats_operation(user_message)
+                    return await self._create_fallback_stats_operation(user_message, conversation_context)
                 
                 return None
                 
@@ -331,8 +362,21 @@ class OpenAIService:
             table_name = parts[1].strip() if len(parts) > 1 else ""
             filters_str = parts[2].strip() if len(parts) > 2 else "{}"
             
+            # Handle tools that don't need table names
+            tools_without_tables = ["health_check", "region_status"]
+            if tool_name in tools_without_tables:
+                # For these tools, the second part might be filters, not table name
+                if table_name.startswith("{") and table_name.endswith("}"):
+                    # The table_name is actually filters
+                    filters_str = table_name
+                    table_name = ""
+                elif table_name == "{}":
+                    # Empty filters represented as {}
+                    table_name = ""
+                    filters_str = "{}"
+            
             # Validate tool name is not empty and is valid
-            valid_tools = ["get_table_stats", "archive_records", "delete_archived_records", "health_check"]
+            valid_tools = ["get_table_stats", "archive_records", "delete_archived_records", "health_check", "region_status"]
             if not tool_name:
                 logger.error(f"Empty tool name in MCP_TOOL line: '{mcp_line}'. Original message: '{original_message}'")
                 return None
@@ -359,8 +403,10 @@ class OpenAIService:
                         self.mcp_result = None
                 return InvalidToolResult(tool_name)
             
-            # Validate table name if provided
+            # Validate table name if provided (some tools don't need table names)
             valid_tables = ["dsiactivities", "dsitransactionlog", "dsiactivities_archive", "dsitransactionlog_archive", ""]
+            requires_table = tool_name not in tools_without_tables
+            
             if table_name and table_name not in valid_tables:
                 logger.warning(f"Invalid table name '{table_name}' provided by LLM. Valid tables: {valid_tables}")
                 # Create error result for invalid table name
@@ -387,6 +433,7 @@ class OpenAIService:
             try:
                 filters_data = json.loads(filters_str) if filters_str else {}
                 filters = filters_data if isinstance(filters_data, dict) else {}
+                logger.info(f"DEBUG: Parsed filters from LLM response: '{filters_str}' -> {filters}")
             except json.JSONDecodeError as e:
                 logger.warning(f"Failed to parse filters JSON '{filters_str}': {e}")
                 # Create error result for invalid filters
@@ -414,7 +461,7 @@ class OpenAIService:
             # Execute the MCP tool
             from cloud_mcp.server import (
                 archive_records, delete_archived_records, 
-                get_table_stats, health_check
+                get_table_stats, health_check, region_status
             )
             
             mcp_result = None
@@ -450,6 +497,8 @@ class OpenAIService:
                         }
             elif tool_name == "health_check":
                 mcp_result = await health_check()
+            elif tool_name == "region_status":
+                mcp_result = await region_status()
             else:
                 logger.warning(f"Unknown MCP tool or missing table: tool={tool_name}, table={table_name}")
             
@@ -462,6 +511,7 @@ class OpenAIService:
                     self.mcp_result = mcp_result
                     self.is_database_operation = True
                     self.operation = None  # Will be handled by MCP result
+                    logger.info(f"DEBUG: Created EnhancedLLMResult with filters: {filters}")
             
             result_obj = EnhancedLLMResult(tool_name, table_name, filters, mcp_result)
             return result_obj
@@ -529,13 +579,15 @@ class OpenAIService:
             logger.error(f"Fallback archive operation failed: {e}")
             return None
 
-    async def _create_fallback_stats_operation(self, user_message: str) -> Any:
+    async def _create_fallback_stats_operation(self, user_message: str, conversation_context: str = None) -> Any:
         """Create fallback stats operation when LLM format parsing fails"""
         try:
             from cloud_mcp.server import get_table_stats
             
-            # Determine table - default to activities if not specified
-            table_name = "dsiactivities"
+            # Determine table using context-awareness
+            table_name = "dsiactivities"  # Default fallback
+            
+            # First, check if the current message explicitly mentions a table
             if "transaction" in user_message.lower():
                 table_name = "dsitransactionlog"
             elif "archive" in user_message.lower():
@@ -543,6 +595,24 @@ class OpenAIService:
                     table_name = "dsitransactionlog_archive"
                 else:
                     table_name = "dsiactivities_archive"
+            # If current message doesn't specify table, use conversation context
+            elif conversation_context:
+                # Look for the most recent table reference in conversation history
+                if "dsitransactionlog" in conversation_context.lower():
+                    # Check if it's archive context
+                    if "archive" in conversation_context.lower() and "dsitransactionlog_archive" in conversation_context.lower():
+                        table_name = "dsitransactionlog_archive"
+                    else:
+                        table_name = "dsitransactionlog"
+                elif "transaction" in conversation_context.lower():
+                    table_name = "dsitransactionlog"
+                elif "dsiactivities_archive" in conversation_context.lower():
+                    table_name = "dsiactivities_archive"
+                elif "archive" in conversation_context.lower() and "activities" in conversation_context.lower():
+                    table_name = "dsiactivities_archive"
+                # If context suggests activities, keep the default
+                
+            logger.info(f"DEBUG: Fallback stats operation determined table '{table_name}' from message '{user_message}' and context: {conversation_context[:200] if conversation_context else 'None'}")
             
             # Use empty filters for general stats
             filters = {}
@@ -633,6 +703,7 @@ class OpenAIService:
             - CAPABILITIES:
             • Query database tables (dsiactivities, dsitransactionlog, and their _archive versions)
             • Guide archiving and data management operations
+            • Check region connection status and current region information
             • Explain safety rules and validate user requests
 
             - CRITICAL SAFETY RULES:
@@ -696,7 +767,7 @@ class OpenAIService:
 
             - EXAMPLES OF APPROPRIATE RESPONSES:
 
-            User: "Hello" → "Hello! I'm your Cloud Inventory Log Management assistant. I can help you view database statistics, manage archiving operations, and explain safety procedures. What would you like to know about your log data?"
+            User: "Hello" → "Hello! I'm your Cloud Inventory Log Management assistant. I can help you view database statistics, check region connections, manage archiving operations, and explain safety procedures. What would you like to know about your log data?"
 
             User: "What's the weather?" → "I'm specialized in Cloud Inventory Log Management and can't help with weather information. However, I can help you with database operations, viewing statistics, archiving procedures, and system health checks. What would you like to know about your log data?"
 
@@ -707,6 +778,8 @@ class OpenAIService:
             User: "Show me something" → "I'd be happy to show you information! Could you be more specific about what you'd like to see? For example:\n• 'Show activities statistics'\n• 'Count transactions from last month'\n• 'Display archive table information'\n• 'Show database health status'\n\nWhat type of data are you interested in?"
 
             User: "Archive policy?" → "Our archiving policy includes several safety measures:\n• Records must be older than 7 days before archiving\n• Only archived records older than 30 days can be deleted\n• All operations require confirmation and are logged\n• Archive operations move data to dedicated archive tables (dsiactivities_archive, dsitransactionlog_archive)\n\nWould you like to see statistics for any specific table or learn about performing an archive operation?"
+
+            User: "Which region is connected?" → [Use region_status tool to show current region connections, available regions, and connection status for all regions]
 
             Remember: Match your response style and detail level to the user's question type and apparent technical knowledge level."""
 
@@ -790,9 +863,9 @@ class OpenAIService:
                            "What would you like to know about your log data?",
                 "suggestions": [
                     "Show table statistics",
+                    "Which region is connected?",
                     "What can you do?", 
-                    "Explain archiving policy",
-                    "Show recent activities"
+                    "Explain archiving policy"
                 ],
                 "source": "fallback"
             }
@@ -814,7 +887,7 @@ class OpenAIService:
                            "Try asking me about specific tables or operations!",
                 "suggestions": [
                     "Show activities statistics",
-                    "Show transactions statistics", 
+                    "Which region is connected?",
                     "Explain safety rules",
                     "What is archiving?"
                 ],
@@ -837,7 +910,7 @@ class OpenAIService:
                            "• \"Archive transactions from last year\"",
                 "suggestions": [
                     "Show activities statistics",
-                    "Show transactions statistics",
+                    "Which region is connected?",
                     "Show archive statistics", 
                     "Database health check"
                 ],
@@ -858,8 +931,8 @@ class OpenAIService:
                            "What would you like to know about your log management system?",
                 "suggestions": [
                     "What can you do?",
+                    "Which region is connected?",
                     "Show table statistics",
-                    "Explain archiving policy",
                     "System health check"
                 ],
                 "source": "fallback"
@@ -878,9 +951,9 @@ class OpenAIService:
                            "Could you try rephrasing your request or choose from the suggestions below?",
                 "suggestions": [
                     "Show table statistics",
-                    "What can you do?", 
-                    "Explain safety rules",
-                    "Show recent data"
+                    "Which region is connected?", 
+                    "What can you do?",
+                    "System health check"
                 ],
                 "source": "fallback"
             }

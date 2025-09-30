@@ -485,6 +485,48 @@ async def _get_table_stats(
             "error": str(e)
         }
 
+async def _region_status() -> Dict[str, Any]:
+    """Get region connection status and current region information"""
+    try:
+        from services.region_service import get_region_service
+        
+        region_service = get_region_service()
+        
+        # Get current region
+        current_region = region_service.get_current_region()
+        
+        # Get all available regions
+        available_regions = region_service.get_available_regions()
+        
+        # Get connection status for all regions
+        connection_status = region_service.get_connection_status()
+        
+        # Find connected regions
+        connected_regions = [region for region, is_connected in connection_status.items() if is_connected]
+        
+        # Get default region
+        default_region = region_service.get_default_region()
+        
+        return {
+            "success": True,
+            "current_region": current_region,
+            "default_region": default_region,
+            "available_regions": available_regions,
+            "connection_status": connection_status,
+            "connected_regions": connected_regions,
+            "total_regions": len(available_regions),
+            "connected_count": len(connected_regions),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in region_status: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
 async def _health_check() -> Dict[str, Any]:
     """Health check for the MCP server"""
     try:
@@ -772,6 +814,11 @@ async def mcp_get_table_stats(
     """Get statistics for a table, optionally with date filters"""
     return await _get_table_stats(table_name, filters)
 
+@mcp.tool(name="region_status")
+async def mcp_region_status() -> Dict[str, Any]:
+    """Get region connection status and current region information"""
+    return await _region_status()
+
 @mcp.tool(name="health_check")
 async def mcp_health_check() -> Dict[str, Any]:
     """Health check for the MCP server"""
@@ -780,6 +827,7 @@ async def mcp_health_check() -> Dict[str, Any]:
 archive_records = _archive_records  
 delete_archived_records = _delete_archived_records
 get_table_stats = _get_table_stats
+region_status = _region_status
 health_check = _health_check
 execute_confirmed_archive = _execute_confirmed_archive
 execute_confirmed_delete = _execute_confirmed_delete

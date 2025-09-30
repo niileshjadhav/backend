@@ -108,7 +108,12 @@ class ChatService:
                 # General stats requests are not logged as they're lightweight operations
                 return await self._handle_general_stats_request(user_info, db, region)
             
-            # Step 0.6: Handle greeting messages directly (bypass LLM to avoid clarification)
+            # Step 0.6: Handle region status requests directly (bypass LLM for reliability)
+            if self._is_region_status_request(user_message):
+                # Region status requests are not logged as they're lightweight operations
+                return await self._handle_region_status_request(user_info, db, region)
+            
+            # Step 0.7: Handle greeting messages directly (bypass LLM to avoid clarification)
             if self._is_greeting_message(user_message):
                 # Greeting messages are not logged as they're conversational
                 user_id = user_info.get("username", "anonymous") if user_info else "anonymous"
@@ -147,12 +152,18 @@ class ChatService:
                             db.commit()
                             db.refresh(chat_log)
                         
-                        # CRITICAL : Store table name and operation type so confirmation process can find it later
+                        # CRITICAL : Store table name, operation type, and filters so confirmation process can find it later
                         if chat_log:
                             chat_log.operation_type = getattr(llm_result, 'tool_used', None)
                             if chat_log.operation_type:
                                 chat_log.operation_type = chat_log.operation_type.upper()
                             chat_log.table_name = getattr(llm_result, 'table_used', None)
+                            filters = getattr(llm_result, 'filters', None)
+                            # Ensure filters is properly serializable as JSON
+                            if filters is not None and isinstance(filters, dict):
+                                chat_log.filters_applied = filters
+                            else:
+                                chat_log.filters_applied = {} if filters is None else filters
                             db.commit()
                         
                         # Format the response
@@ -340,6 +351,9 @@ class ChatService:
             elif tool_used == "health_check":
                 return self._format_health_response(mcp_result, region)
                 
+            elif tool_used == "region_status":
+                return self._format_region_status_response(mcp_result, region)
+                
             else:
                 # Unknown or null tool - this should not happen with our new logic
                 if tool_used is None:
@@ -386,6 +400,17 @@ class ChatService:
             'database summary', 'show all tables', 'list all tables'
         ]
         return any(pattern in message_lower for pattern in general_stats_patterns)
+
+    def _is_region_status_request(self, message: str) -> bool:
+        """Check if message is asking for region connection status"""
+        message_lower = message.lower().strip()
+        region_patterns = [
+            'which region', 'current region', 'region status', 'region connection',
+            'connected region', 'what region', 'region info', 'show region',
+            'region information', 'connection status', 'which region is connected',
+            'what region is connected', 'current region status', 'region details'
+        ]
+        return any(pattern in message_lower for pattern in region_patterns)
 
     def _is_greeting_message(self, message: str) -> bool:
         """Check if message is a greeting/initialization message"""
@@ -651,6 +676,7 @@ class ChatService:
                             chat_log.bot_response = response
                             chat_log.operation_status = "archive_completed"
                             chat_log.records_affected = archived_count
+                            chat_log.filters_applied = getattr(llm_result, 'filters', None)
                             db.commit()
                             
                             return ChatResponse(
@@ -672,6 +698,7 @@ class ChatService:
                             
                             chat_log.bot_response = response
                             chat_log.operation_status = "archive_failed"
+                            chat_log.filters_applied = getattr(llm_result, 'filters', None)
                             db.commit()
                             
                             return ChatResponse(
@@ -707,6 +734,7 @@ class ChatService:
                             chat_log.bot_response = response
                             chat_log.operation_status = "delete_completed"
                             chat_log.records_affected = deleted_count
+                            chat_log.filters_applied = getattr(llm_result, 'filters', None)
                             db.commit()
                             
                             return ChatResponse(
@@ -728,6 +756,7 @@ class ChatService:
                             
                             chat_log.bot_response = response
                             chat_log.operation_status = "delete_failed"
+                            chat_log.filters_applied = getattr(llm_result, 'filters', None)
                             db.commit()
                             
                             return ChatResponse(
@@ -826,12 +855,13 @@ class ChatService:
                 
                 # Create mock LLM result structure
                 class MockLLMResult:
-                    def __init__(self, tool, table, result):
+                    def __init__(self, tool, table, filters, result):
                         self.tool_used = tool
                         self.table_used = table
+                        self.filters = filters
                         self.mcp_result = result
                 
-                return MockLLMResult("archive_records", table_name, mcp_result)
+                return MockLLMResult("archive_records", table_name, filters, mcp_result)
                 
             elif "CONFIRM DELETE" in message_upper:
                 # CRITICAL FIX: Use the stored table name from the preview operation
@@ -862,12 +892,13 @@ class ChatService:
                 
                 # Create mock LLM result structure
                 class MockLLMResult:
-                    def __init__(self, tool, table, result):
+                    def __init__(self, tool, table, filters, result):
                         self.tool_used = tool
                         self.table_used = table
+                        self.filters = filters
                         self.mcp_result = result
                 
-                return MockLLMResult("delete_archived_records", table_name, mcp_result)
+                return MockLLMResult("delete_archived_records", table_name, filters, mcp_result)
                 
             else:
                 logger.warning(f"Unknown confirmation type: {message_upper}")
@@ -961,11 +992,15 @@ class ChatService:
             for log in recent_logs:
                 if log.user_message:
                     conversation.append(f"User: {log.user_message}")
+                    # Add table context information for better LLM understanding
+                    if log.table_name:
+                        conversation.append(f"[Context: Previous operation on table: {log.table_name}]")
                 if log.bot_response:
                     conversation.append(f"Assistant: {log.bot_response}")
             
             # Limit total context length to avoid token limits
             context = "\n".join(conversation[-10:])  # Last 10 messages (5 exchanges)
+            logger.info(f"DEBUG: Built conversation context with {len(recent_logs)} logs: {context[:300]}...")
             
             if len(context) > 2000:  # Truncate if too long
                 context = context[-2000:]
@@ -1023,6 +1058,26 @@ class ChatService:
             error_msg = f"Failed to retrieve table statistics: {str(e)}"
             return ChatResponse(
                 response=f"Statistics Error - {region.upper()} Region\n\n{error_msg}",
+                response_type="error",
+                structured_content=self._create_error_structured_content(error_msg, region)
+            )
+
+    async def _handle_region_status_request(self, user_info: dict, db: Session, region: str) -> ChatResponse:
+        """Handle region connection status request directly"""
+        try:
+            from cloud_mcp.server import region_status
+            
+            # Execute region status MCP tool
+            mcp_result = await region_status()
+            
+            # Format the response
+            return self._format_region_status_response(mcp_result, region)
+                
+        except Exception as e:
+            logger.error(f"Error handling region status request: {e}")
+            error_msg = f"Failed to retrieve region status: {str(e)}"
+            return ChatResponse(
+                response=f"❌ Region Status Error\n\n{error_msg}",
                 response_type="error",
                 structured_content=self._create_error_structured_content(error_msg, region)
             )
@@ -1452,6 +1507,86 @@ class ChatService:
             response_type="health_check",
             structured_content=structured_content,
             context={"tool": "health_check"}
+        )
+
+    def _format_region_status_response(self, mcp_result: dict, region: str) -> ChatResponse:
+        """Format region status response"""
+        if not mcp_result.get("success"):
+            error_msg = mcp_result.get("error", "Failed to get region status")
+            response = f"❌ Region Status Error\n\n{error_msg}"
+            return ChatResponse(
+                response=response,
+                response_type="error",
+                structured_content=self._create_error_structured_content(error_msg, region)
+            )
+        
+        current_region = mcp_result.get("current_region")
+        default_region = mcp_result.get("default_region")
+        available_regions = mcp_result.get("available_regions", [])
+        connection_status = mcp_result.get("connection_status", {})
+        connected_regions = mcp_result.get("connected_regions", [])
+        
+        # Build response with natural sentence format
+        total_regions = len(available_regions)
+        connected_count = len(connected_regions)
+        
+        response = f"🌐 Region Status Information\n\n"
+        
+        # Main summary sentence
+        if connected_count == 0:
+            response += f"There are **{total_regions} regions** available ({', '.join([r.upper() for r in available_regions])}), of which currently **none is connected**.\n\n"
+        elif connected_count == 1:
+            connected_region = connected_regions[0]
+            response += f"There are **{total_regions} regions** available ({', '.join([r.upper() for r in available_regions])}), of which currently **{connected_region.upper()}** is connected.\n\n"
+        else:
+            connected_list = ', '.join([r.upper() for r in connected_regions])
+            response += f"There are **{total_regions} regions** available ({', '.join([r.upper() for r in available_regions])}), of which currently **{connected_list}** are connected.\n\n"
+        
+        # Current region info
+        if current_region:
+            is_connected = connection_status.get(current_region, False)
+            connection_text = "✅ Connected" if is_connected else "❌ Disconnected"
+            response += f"**Active Region:** {current_region.upper()} ({connection_text})\n"
+        else:
+            response += f"**Active Region:** None (using default: {default_region.upper()})\n"
+        
+        # Default region
+        if default_region and default_region != current_region:
+            response += f"**Default Region:** {default_region.upper()}"
+        
+        # Structured content
+        structured_content = {
+            "type": "region_status_card",
+            "title": "Region Status",
+            "icon": "🌐",
+            "current_region": current_region,
+            "default_region": default_region,
+            "available_regions": available_regions,
+            "connection_status": connection_status,
+            "connected_regions": connected_regions,
+            "summary": {
+                "total_regions": total_regions,
+                "connected_count": connected_count,
+                "all_connected": connected_count == total_regions,
+                "none_connected": connected_count == 0
+            },
+            "details": [
+                f"Current Region: {current_region.upper() if current_region else 'None'}",
+                f"Connected Regions: {connected_count}/{total_regions}",
+                f"Available Regions: {', '.join([r.upper() for r in available_regions])}"
+            ]
+        }
+        
+        return ChatResponse(
+            response=response,
+            response_type="region_status",
+            structured_content=structured_content,
+            context={
+                "tool": "region_status",
+                "current_region": current_region,
+                "connected_count": connected_count,
+                "total_regions": total_regions
+            }
         )
 
     def _create_welcome_response(self, user_id: str, user_role: str, region: str) -> ChatResponse:
