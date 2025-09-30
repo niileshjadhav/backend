@@ -108,6 +108,13 @@ class ChatService:
                 # General stats requests are not logged as they're lightweight operations
                 return await self._handle_general_stats_request(user_info, db, region)
             
+            # Step 0.6: Handle greeting messages directly (bypass LLM to avoid clarification)
+            if self._is_greeting_message(user_message):
+                # Greeting messages are not logged as they're conversational
+                user_id = user_info.get("username", "anonymous") if user_info else "anonymous"
+                user_role = user_info.get("role", "Monitor") if user_info else "Monitor"
+                return self._create_welcome_response(user_id, user_role, region)
+            
             # Step 1: Let LLM decide everything in one intelligent call
             conversation_history = self._get_conversation_history(final_session_id, db)
             
@@ -117,39 +124,53 @@ class ChatService:
                     conversation_context=conversation_history
                 )
                 
-                if llm_result and llm_result.mcp_result:
-                    # For database operations, ensure we have a chat_log
-                    if not chat_log:
-                        chat_log = ChatOpsLog(
-                            session_id=final_session_id,
-                            user_message=user_message,
-                            region=region,
-                            user_id=final_user_id,
-                            user_role=user_role,
-                            message_type="query",
-                            operation_status="processing"
+                if llm_result:
+                    # Check if this is a clarification request first (highest priority)
+                    if hasattr(llm_result, 'is_clarification_request') and llm_result.is_clarification_request:
+                        # Handle clarification request - no need for chat_log since it's just a clarification
+                        return await self._handle_llm_clarification_response(llm_result, region)
+                    
+                    # Check if this is a valid MCP operation (must have mcp_result AND tool_used)
+                    if llm_result.mcp_result and getattr(llm_result, 'tool_used', None):
+                        # For database operations, ensure we have a chat_log
+                        if not chat_log:
+                            chat_log = ChatOpsLog(
+                                session_id=final_session_id,
+                                user_message=user_message,
+                                region=region,
+                                user_id=final_user_id,
+                                user_role=user_role,
+                                message_type="query",
+                                operation_status="processing"
+                            )
+                            db.add(chat_log)
+                            db.commit()
+                            db.refresh(chat_log)
+                        
+                        # CRITICAL : Store table name and operation type so confirmation process can find it later
+                        if chat_log:
+                            chat_log.operation_type = getattr(llm_result, 'tool_used', None)
+                            if chat_log.operation_type:
+                                chat_log.operation_type = chat_log.operation_type.upper()
+                            chat_log.table_name = getattr(llm_result, 'table_used', None)
+                            db.commit()
+                        
+                        # Format the response
+                        formatted_response = self._format_response_by_tool(llm_result, region, final_session_id)
+                        
+                        # CRITICAL : Update ChatOpsLog with the formatted bot response so confirmation can find preview operations
+                        if chat_log and formatted_response:
+                            chat_log.bot_response = formatted_response.response
+                            db.commit()
+                        
+                        return formatted_response
+                    else:
+                        # LLM result exists but no valid MCP operation - fall back to conversational
+                        return await self._handle_conversational(
+                            user_message, user_info, db, chat_log, region, final_session_id
                         )
-                        db.add(chat_log)
-                        db.commit()
-                        db.refresh(chat_log)
-                    
-                    # CRITICAL : Store table name and operation type so confirmation process can find it later
-                    if chat_log:
-                        chat_log.operation_type = llm_result.tool_used.upper() if llm_result.tool_used else None
-                        chat_log.table_name = llm_result.table_used if hasattr(llm_result, 'table_used') else None
-                        db.commit()
-                    
-                    # Format the response
-                    formatted_response = self._format_response_by_tool(llm_result, region, final_session_id)
-                    
-                    # CRITICAL : Update ChatOpsLog with the formatted bot response so confirmation can find preview operations
-                    if chat_log and formatted_response:
-                        chat_log.bot_response = formatted_response.response
-                        db.commit()
-                    
-                    return formatted_response
                 else:
-                    # Conversational response
+                    # No LLM result - conversational response
                     return await self._handle_conversational(
                         user_message, user_info, db, chat_log, region, final_session_id
                     )
@@ -167,6 +188,56 @@ class ChatService:
                 response=error_message,
                 response_type="error",
                 structured_content=self._create_error_structured_content(str(e), region if 'region' in locals() else "UNKNOWN")
+            )
+
+    async def _handle_llm_clarification_response(
+        self, 
+        llm_result, 
+        region: str
+    ) -> ChatResponse:
+        """Handle clarification requests from LLM parsing"""
+        try:
+            clarification_message = llm_result.clarification_message
+            
+            # Create structured content for clarification
+            structured_content = {
+                "type": "clarification_card",
+                "title": "Need More Information",
+                "icon": "",
+                "region": region.upper(),
+                "message": clarification_message,
+                "suggestions": [
+                    "Show activities statistics",
+                    "Show transactions statistics", 
+                    "Archive activities older than 7 days",
+                    "Delete archived records older than 30 days"
+                ],
+                "context": {
+                    "response_type": "clarification",
+                    "timestamp": datetime.now().isoformat()
+                }
+            }
+            
+            return ChatResponse(
+                response=clarification_message,
+                response_type="clarification",
+                structured_content=structured_content,
+                suggestions=[
+                    "Show activities statistics",
+                    "Show transactions statistics", 
+                    "Archive activities older than 7 days",
+                    "Delete archived records older than 30 days"
+                ]
+            )
+            
+        except Exception as e:
+            logger.error(f"Error handling LLM clarification response: {e}")
+            # Fallback to error response
+            error_message = "I'm having trouble understanding your request. Could you please rephrase it?"
+            return ChatResponse(
+                response=error_message,
+                response_type="error",
+                structured_content=self._create_error_structured_content(error_message, region)
             )
 
     async def _handle_conversational(
@@ -238,6 +309,19 @@ class ChatService:
             tool_used = llm_result.tool_used
             table_used = llm_result.table_used
             
+            # Safety check: if tool_used is None or empty, this should not happen with our new logic
+            if not tool_used:
+                logger.error(f"_format_response_by_tool called with None/empty tool_used. This indicates an issue in the calling logic.")
+                error_message = "❌ Processing Error\n\nThere was an issue processing your request. Please try rephrasing it or contact support."
+                return ChatResponse(
+                    response=error_message,
+                    response_type="error",
+                    structured_content=self._create_error_structured_content(
+                        "Processing error: empty tool name",
+                        region
+                    )
+                )
+            
             # Handle special case for general stats requests (all tables)
             if tool_used == "get_table_stats" and not table_used:
                 # This is a general database statistics request
@@ -257,14 +341,19 @@ class ChatService:
                 return self._format_health_response(mcp_result, region)
                 
             else:
-                # Unknown tool
-                logger.warning(f"Unknown MCP tool: {tool_used}")
-                error_message = f"❌ Unknown Operation\n\nThe system tried to use an unknown operation: {tool_used}. Please try rephrasing your request."
+                # Unknown or null tool - this should not happen with our new logic
+                if tool_used is None:
+                    logger.error(f"_format_response_by_tool received None tool_used - this indicates a logic error in the calling code")
+                    error_message = f"❌ Processing Error\n\nThere was an issue processing your request. Please try rephrasing it."
+                else:
+                    logger.warning(f"Unknown MCP tool: {tool_used}")
+                    error_message = f"❌ Unknown Operation\n\nThe system tried to use an unknown operation: {tool_used}. Please try rephrasing your request."
+                
                 return ChatResponse(
                     response=error_message,
                     response_type="error",
                     structured_content=self._create_error_structured_content(
-                        f"Unknown operation: {tool_used}",
+                        f"Unknown operation: {tool_used or 'None'}",
                         region
                     )
                 )
@@ -292,7 +381,7 @@ class ChatService:
         message_lower = message.lower().strip()
         general_stats_patterns = [
             'show table statistics', 'table statistics', 'database statistics',
-            'show database stats', 'show table stats', 'database stats',
+            'show database stats', 'show table stats', 'database stats', 'DB stats',
             'show all table stats', 'show stats for all tables', 'table summary',
             'database summary', 'show all tables', 'list all tables'
         ]
@@ -301,12 +390,34 @@ class ChatService:
     def _is_greeting_message(self, message: str) -> bool:
         """Check if message is a greeting/initialization message"""
         message_lower = message.lower().strip()
-        greeting_patterns = [
-            'hello', 'hi', 'good morning', 'good afternoon', 
+        
+        # First check for exact simple greetings
+        simple_greetings = ['hello', 'hi', 'hey', 'yo', 'greetings', 'howdy']
+        if message_lower in simple_greetings:
+            return True
+        
+        # Check for greeting phrases that should be detected (more specific matching)
+        greeting_phrases = [
+            'good morning', 'good afternoon', 'good evening',
             'logged in as', 'i\'m logged in', 'working with region',
-            'selected but not connected', 'role.'
+            'selected but not connected'
         ]
-        return any(pattern in message_lower for pattern in greeting_patterns)
+        
+        for phrase in greeting_phrases:
+            if phrase in message_lower:
+                return True
+        
+        # Check for messages that start with greetings
+        greeting_starters = ['hello ', 'hi ', 'hey ', 'greetings ']
+        for starter in greeting_starters:
+            if message_lower.startswith(starter):
+                return True
+        
+        # Check for role-related initialization messages (more specific)
+        if message_lower.endswith(' role.') or 'role.' in message_lower:
+            return True
+        
+        return False
 
     def _should_log_operation(self, message: str) -> bool:
         """Determine if this message should be logged in chatops_log table"""
@@ -368,7 +479,7 @@ class ChatService:
         try:
             # Check if user has permission for operations
             if not user_info or user_info.get("role") != "Admin":
-                error_message = "❌ Access Denied\n\nArchive and delete operations require Admin privileges."
+                error_message = "Access Denied\n\nArchive and delete operations require Admin privileges."
                 return ChatResponse(
                     response=error_message,
                     response_type="error",
@@ -385,17 +496,57 @@ class ChatService:
             
             # Check for cancellation first
             if "CANCEL" in message_upper or "ABORT" in message_upper or "NO" in message_upper:
-                response = "❌ Operation Cancelled\n\nThe operation has been cancelled and will not proceed.\nNo changes have been made to the database."
+                # Try to extract table and operation information from recent operations
+                recent_logs = db.query(ChatOpsLog).filter(
+                    ChatOpsLog.session_id == chat_log.session_id
+                ).order_by(ChatOpsLog.timestamp.desc()).limit(5).all()
+                
+                # Find the most recent preview operation to get table information
+                preview_operation = None
+                operation_type = "Operation"
+                table_name = None
+                
+                for log in recent_logs:
+                    if log.bot_response and ("Archive Preview" in log.bot_response or "Delete Preview" in log.bot_response):
+                        preview_operation = log
+                        if "Archive Preview" in log.bot_response:
+                            operation_type = "Archive Operation"
+                        elif "Delete Preview" in log.bot_response:
+                            operation_type = "Delete Operation"
+                        
+                        # Extract table name from stored table_name or from response
+                        table_name = preview_operation.table_name
+                        if not table_name and preview_operation.bot_response:
+                            # Try to extract from response text
+                            import re
+                            table_match = re.search(r'From Table: (\w+)', preview_operation.bot_response)
+                            if table_match:
+                                table_name = table_match.group(1)
+                        break
+                
+                # Build response with table information if available
+                if table_name:
+                    response = f"{operation_type} Cancelled\n\nThe {operation_type.lower()} for table '{table_name}' has been cancelled and will not proceed.\nNo changes have been made to the database."
+                    details = [
+                        f"Cancelled: {operation_type} for {table_name}",
+                        "No changes have been made to the database"
+                    ]
+                else:
+                    response = "Operation Cancelled\n\nThe operation has been cancelled and will not proceed.\nNo changes have been made to the database."
+                    details = ["No changes have been made to the database"]
                 
                 structured_content = {
                     "type": "cancelled_card",
-                    "title": "Operation Cancelled",
-                    "icon": "❌",
+                    "title": f"{operation_type} Cancelled",
+                    "icon": "",
                     "region": region.upper(),
+                    "table": table_name,  # Add table name for frontend display
                     "message": "The operation has been cancelled and will not proceed.",
-                    "details": ["No changes have been made to the database"],
+                    "details": details,
                     "context": {
                         "response_type": "cancelled",
+                        "operation_type": operation_type,
+                        "table_name": table_name,
                         "timestamp": datetime.now().isoformat()
                     }
                 }
@@ -408,7 +559,7 @@ class ChatService:
                     response=response,
                     response_type="cancelled",
                     structured_content=structured_content,
-                    context={"cancelled": True}
+                    context={"cancelled": True, "table": table_name, "operation_type": operation_type}
                 )
             
             # Use LLM with conversation context to understand and execute the confirmation
@@ -440,10 +591,10 @@ class ChatService:
                 else:
                     # Last resort: Try to parse from conversation history using LLM
                     
-                    # CRITICAL FIX: Don't hardcode table names in fallback - this causes wrong table targeting
+                    # CRITICAL : Don't hardcode table names in fallback - this causes wrong table targeting
                     if "CONFIRM ARCHIVE" in message_upper:
                         return ChatResponse(
-                            response="❌ Archive Confirmation Failed\n\nCannot determine which table to archive. Please start a new archive operation by saying something like:\n• 'archive transactions older than 30 days'\n• 'archive activities older than 30 days'",
+                            response="Archive Confirmation Failed\n\nCannot determine which table to archive. Please start a new archive operation by saying something like:\n• 'archive transactions older than 7 days'\n• 'archive activities older than 7 days'",
                             response_type="error",
                             structured_content=self._create_error_structured_content(
                                 "Cannot determine target table for archive operation. Please start a new operation.",
@@ -452,7 +603,7 @@ class ChatService:
                         )
                     elif "CONFIRM DELETE" in message_upper:
                         return ChatResponse(
-                            response="❌ Delete Confirmation Failed\n\nCannot determine which archived table to delete from. Please start a new delete operation by saying something like:\n• 'delete archived transactions older than 60 days'\n• 'delete archived activities older than 60 days'",
+                            response="Delete Confirmation Failed\n\nCannot determine which archived table to delete from. Please start a new delete operation by saying something like:\n• 'delete archived transactions older than 30 days'\n• 'delete archived activities older than 30 days'",
                             response_type="error",
                             structured_content=self._create_error_structured_content(
                                 "Cannot determine target table for delete operation. Please start a new operation.",
@@ -601,7 +752,7 @@ class ChatService:
                         logger.error(f"Direct confirmation fallback also failed: {fallback_error}")
                     
                     # If everything fails, return error
-                    error_message = "❌ Confirmation Processing Failed\n\nThe system failed to process your confirmation. Please try again.\n\nTip: Try saying 'archive activities' or 'delete archived activities' to start a new operation."
+                    error_message = "Confirmation Processing Failed\n\nThe system failed to process your confirmation. Please try again.\n\nTip: Try saying 'archive activities' or 'delete archived activities' to start a new operation."
                     return ChatResponse(
                         response=error_message,
                         response_type="error",
@@ -612,7 +763,7 @@ class ChatService:
                     )
             
             # If we get here, the confirmation was not understood
-            error_message = "❌ Invalid Confirmation\n\nPlease type 'CONFIRM ARCHIVE', 'CONFIRM DELETE', or 'CANCEL' to proceed."
+            error_message = "Invalid Confirmation\n\nPlease type 'CONFIRM ARCHIVE', 'CONFIRM DELETE', or 'CANCEL' to proceed."
             return ChatResponse(
                 response=error_message,
                 response_type="error",
@@ -624,7 +775,7 @@ class ChatService:
             
         except Exception as e:
             logger.error(f"Confirmation handling error: {e}")
-            error_message = f"❌ Error processing confirmation: {str(e)}"
+            error_message = f"Error processing confirmation: {str(e)}"
             return ChatResponse(
                 response=error_message,
                 response_type="error",
@@ -767,7 +918,7 @@ class ChatService:
             if "CONFIRM ARCHIVE" in message_upper:
                 # This fallback should not be used as it can't reliably determine the intended table
                 return ChatResponse(
-                    response="❌ Archive Confirmation Failed\n\nCannot determine which table to archive. Please start a new archive operation by saying something like:\n• 'archive transactions older than 30 days'\n• 'archive activities older than 30 days'",
+                    response="❌ Archive Confirmation Failed\n\nCannot determine which table to archive. Please start a new archive operation by saying something like:\n• 'archive transactions older than 7 days'\n• 'archive activities older than 7 days'",
                     response_type="error",
                     structured_content=self._create_error_structured_content(
                         "Cannot determine target table for archive operation. Please start a new operation.",
@@ -871,7 +1022,7 @@ class ChatService:
             logger.error(f"Error handling general stats request: {e}")
             error_msg = f"Failed to retrieve table statistics: {str(e)}"
             return ChatResponse(
-                response=f"❌ Statistics Error - {region.upper()} Region\n\n{error_msg}",
+                response=f"Statistics Error - {region.upper()} Region\n\n{error_msg}",
                 response_type="error",
                 structured_content=self._create_error_structured_content(error_msg, region)
             )
@@ -880,7 +1031,7 @@ class ChatService:
         """Format table statistics response with structured content"""
         if not mcp_result.get("success"):
             error_msg = mcp_result.get("error", "Unknown error")
-            error_message = f"❌ Stats Error - {region.upper()} Region\n\n{error_msg}"
+            error_message = f"Stats Error - {region.upper()} Region\n\n{error_msg}"
             return ChatResponse(
                 response=error_message,
                 response_type="error",
@@ -889,9 +1040,6 @@ class ChatService:
         
         # Build statistics display - MCP result returns data at root level
         filtered_count = mcp_result.get("record_count", 0)  # This is the filtered count (or total if no filter)
-        total_records = mcp_result.get("total_records", 0)   # This is always the total count
-        earliest_date = mcp_result.get("earliest_date")
-        latest_date = mcp_result.get("latest_date")
         filter_description = mcp_result.get("filter_description")
         filter_applied = mcp_result.get("filter_applied")
         
@@ -1048,7 +1196,7 @@ class ChatService:
         # Build structured content
         structured_content = {
             "type": "database_overview",
-            "title": f"Database Statistics - {region.upper()} Region",
+            "title": f"Database Statistics",
             "region": region.upper(),
             "main_tables": main_tables,
             "archive_tables": archive_tables,
@@ -1129,6 +1277,7 @@ class ChatService:
                 "title": "Archive Result",
                 "region": region.upper(),
                 "details": [
+                    f"Table: {table_name}",
                     "No records found matching the criteria",
                     "No archive operation was needed"
                 ]
@@ -1233,6 +1382,7 @@ class ChatService:
                 "title": "Delete Result",
                 "region": region.upper(),
                 "details": [
+                    f"Table: {table_name}",
                     "No records found matching the criteria",
                     "No delete operation was needed"
                 ]

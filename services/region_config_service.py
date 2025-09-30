@@ -3,7 +3,7 @@ import logging
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from datetime import datetime
+from datetime import datetime, timezone
 from models.region_config import RegionConfig
 from database import get_db
 
@@ -205,7 +205,7 @@ class RegionConfigService:
             if config:
                 config.is_connected = is_connected
                 if is_connected:
-                    config.last_connected_at = datetime.utcnow()
+                    config.last_connected_at = datetime.now(timezone.utc)
                 db.commit()
         except Exception as e:
             self.logger.error(f"Failed to update connection status for {region}: {e}")

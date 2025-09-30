@@ -6,7 +6,7 @@ from typing import Optional, Dict, List
 import hashlib
 import jwt
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 from passlib.context import CryptContext
 
@@ -112,7 +112,7 @@ class AuthService:
         """Create JWT access token"""
         try:
             to_encode = user_data.copy()
-            expire = datetime.utcnow() + timedelta(minutes=self.token_expire_minutes)
+            expire = datetime.now(timezone.utc) + timedelta(minutes=self.token_expire_minutes)
             to_encode.update({"exp": expire})
             
             return jwt.encode(to_encode, self.secret_key, algorithm=self.algorithm)

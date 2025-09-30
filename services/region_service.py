@@ -200,10 +200,14 @@ class RegionService:
                         result = conn.execute(text(f"SELECT COUNT(*) FROM {table}")).fetchone()
                         tables_info[table] = result[0] if result else 0
                         
-                        # Also check archive table
-                        archive_table = f"archive_{table}"
-                        result = conn.execute(text(f"SELECT COUNT(*) FROM {archive_table}")).fetchone()
-                        tables_info[archive_table] = result[0] if result else 0
+                        # Also check archive table (use correct naming convention: table_archive)
+                        archive_table = f"{table}_archive"
+                        try:
+                            result = conn.execute(text(f"SELECT COUNT(*) FROM {archive_table}")).fetchone()
+                            tables_info[archive_table] = result[0] if result else 0
+                        except Exception as archive_error:
+                            logger.warning(f"Archive table {archive_table} does not exist or cannot be queried: {archive_error}")
+                            tables_info[archive_table] = 0
                         
                     except Exception as table_error:
                         logger.warning(f"Could not query table {table}: {table_error}")
