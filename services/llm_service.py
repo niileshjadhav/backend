@@ -46,10 +46,8 @@ class OpenAIService:
             return context_info
             
         try:
-            # Look for the most recent table reference
             context_lower = conversation_context.lower()
             
-            # Check for explicit table names (most recent wins)
             table_mentions = []
             for table in ["dsitransactionlog_archive", "dsiactivities_archive", "dsitransactionlog", "dsiactivities"]:
                 if table in context_lower:
@@ -72,7 +70,6 @@ class OpenAIService:
                     number, unit = match.groups()
                     context_info["last_filters"] = {"date_filter": f"older_than_{number}_{unit}s"}
             
-            # Extract operation type
             if "archive" in context_lower:
                 context_info["last_operation"] = "archive"
             elif "count" in context_lower or "statistics" in context_lower:
@@ -89,7 +86,6 @@ class OpenAIService:
         """Determine table name using message content and context"""
         user_msg_lower = user_message.lower()
         
-        # First priority: Explicit full table mentions in current message
         if "dsitransactionlog_archive" in user_msg_lower:
             return "dsitransactionlog_archive"
         elif "dsiactivities_archive" in user_msg_lower:
@@ -99,23 +95,31 @@ class OpenAIService:
         elif "dsiactivities" in user_msg_lower and "archive" not in user_msg_lower:
             return "dsiactivities"
         
-        # Second priority: Generic table type mentions - preserve archive context if exists
-        last_table = context_info.get("last_table", "")
+        # Second priority: Let LLM determine context-dependent queries
+        # Simple check: if no explicit table mentioned and we have context, let LLM decide
+        has_explicit_table = ("transaction" in user_msg_lower or "activit" in user_msg_lower or 
+                             "dsitransactionlog" in user_msg_lower or "dsiactivities" in user_msg_lower)
+        
+        # If no explicit table mentioned and we have previous context, preserve it
+        # The LLM prompt will handle the intelligent decision-making
+        if not has_explicit_table and context_info.get("last_table"):
+            return context_info["last_table"]
+        
+        # Third priority: Explicit table type mentions (fresh requests with table specified)
+        # These are NEW queries that explicitly mention table type, use main tables
         
         if "transaction" in user_msg_lower:
-            # If previous context was archive table, preserve it
-            if "archive" in last_table or "archive" in user_msg_lower:
+            # "transactions older than X" or "show transactions" → use main table
+            if "archive" in user_msg_lower:
                 return "dsitransactionlog_archive"
             return "dsitransactionlog"
         elif "activit" in user_msg_lower:
-            # If previous context was archive table, preserve it
-            if "archive" in last_table or "archive" in user_msg_lower:
+            # "activities older than X" or "show activities" → use main table  
+            if "archive" in user_msg_lower:
                 return "dsiactivities_archive"
             return "dsiactivities"
         
-        # Third priority: Use context from previous operations (preserve exact table)
-        if context_info.get("last_table"):
-            return context_info["last_table"]
+
         
         # Default fallback
         return "dsiactivities"
@@ -201,15 +205,24 @@ class OpenAIService:
             - Look for previous queries to understand what table/operation user is referring to
             - Context patterns: "for then", "what about", "how about", "and for", "also for", "archive them", "delete them", "those records", "count", "count them", "show count"
             - Example: Previous "activities older than 30 days" → "archive them" = MUST use both "dsiactivities" table AND "older_than_30_days" filter
-            - Example: Previous "archive transactions" → "count" = MUST use "dsitransactionlog" table (same table as previous operation)
-            - Example: Previous "transactions older than 10 days" → "count" = MUST use "dsitransactionlog" table (same table as previous operation)
+            - Example: Previous "archived transactions older than 10 days" → "count" = MUST use "dsitransactionlog_archive" table (preserve archive context)
+            - Example: Previous "archived transactions older than 10 days" → "delete them" = MUST use "dsitransactionlog_archive" table (preserve archive context)
+            - Example: Previous "archived activities older than 30 days" → "delete them" = MUST use "dsiactivities_archive" table (preserve archive context)
+            - Example: Previous "archived transactions" → "delete those records" = MUST use "dsitransactionlog_archive" table (preserve archive context)
+            - Example: Previous "archived activities older than 30 days" → "show transactions" = MUST use "dsitransactionlog" table (NEW explicit table request)
             
             TABLE CONTINUITY RULES - CRITICAL:
             - If previous operation was on "dsitransactionlog" → any follow-up "count", "show", "list" should ALSO use "dsitransactionlog"
             - If previous operation was on "dsiactivities" → any follow-up "count", "show", "list" should ALSO use "dsiactivities"
             - Look for "[Context: Previous operation on table: TABLE_NAME]" markers in conversation history
             - When user says just "count" without specifying table, use the MOST RECENT table from conversation history
-            - DO NOT default to "dsiactivities" if recent context shows operations on "dsitransactionlog"
+            - DO NOT default to "dsiactivities" if recent context shows operations on "dsitransactionlog" or archive tables
+            - SMART CONTEXT DECISION: Use your intelligence to determine if the query references previous results or is a new request:
+              * References to previous: "archive them", "delete those", "count", "older than X", "yes archive", "remove all that data" → PRESERVE previous table context
+              * New explicit requests: "show activities", "transactions older than X", "archive activities" → Use specified table type
+              * CRITICAL: After "archived transactions" query, "delete them" MUST use dsitransactionlog_archive (preserve archive context)
+              * CRITICAL: After "archived activities" query, "delete them" MUST use dsiactivities_archive (preserve archive context)
+              * Use natural language understanding rather than rigid keyword matching
             
             CONFIRMATION HANDLING:
             If this is a confirmation (contains "CONFIRM ARCHIVE" or "CONFIRM DELETE"):
@@ -242,11 +255,27 @@ class OpenAIService:
             Key Analysis Rules:
             - DATA QUERIES: COUNT/HOW MANY/STATISTICS about records → ALWAYS use get_table_stats
             - DATA OPERATIONS: "show activities", "list transactions", "display archive records" → ALWAYS use get_table_stats (show counts, not records)
+            - CRITICAL: "archived transactions" or "archived activities" = QUERY operations (show stats), NOT delete operations
+            - DELETE operations require explicit confirmation or follow-up commands like "delete them"
+            - MAIN vs ARCHIVE TABLE SELECTION:
+              * "count transactions", "show transactions", "list transactions" → Use MAIN table (dsitransactionlog)
+              * "count archived transactions", "show archived transactions" → Use ARCHIVE table (dsitransactionlog_archive)
+              * Only use archive tables when "archive" or "archived" is explicitly mentioned
             - GENERAL DATABASE STATS (e.g., "show table statistics", "database statistics") → use get_table_stats with NO table name (leave empty)
             - REGION QUERIES: "which region", "current region", "region status", "connected regions", "what region" → ALWAYS use region_status
             - POLICY/EXPLANATION QUESTIONS: "what is archive policy", "how does archiving work", "what does archive mean" → Return None (conversational)
-            - Table Selection: Use main tables (dsiactivities, dsitransactionlog) unless specifically asked for archived data
-            - Context-aware parsing: If user says "show me more", "archive those", "archive them", "delete them", "for then X days", "what about Y months", refer to previous conversation
+            - INTELLIGENT Table Selection: 
+              * Use your language understanding to distinguish between NEW requests vs REFERENCES to previous results
+              * NEW requests: User mentions specific table type → Use that table (main tables unless explicitly archived)
+              * CRITICAL: "count transactions", "show activities" = NEW requests → Use MAIN tables (ignore previous archive context)
+              * REFERENCES: User refers to previous results in any natural way → Preserve exact previous table context
+              * Trust your understanding of natural language intent over rigid pattern matching
+            - NATURAL LANGUAGE CONTEXT UNDERSTANDING: Use your intelligence to understand when users are:
+              1. Referring to previous results (any natural expression like "archive those", "delete the old stuff", "delete them", "remove all that", etc.)
+              2. Making new requests (explicit table mentions or completely new topics)
+              3. NEVER ask for clarification when context is clear from conversation history
+              4. If previous query was about "archived X", then "delete them" clearly refers to deleting those archived records
+              5. Don't rely on hardcoded patterns - understand the conversational flow and user intent
             - CONTEXT PRESERVATION: If previous query was about archive tables, follow-up date queries (older than X, from Y) should STAY on archive tables!
             - Date filters: Parse natural language dates
                - "older than 10 months" → {{"date_filter": "older_than_10_months"}}
@@ -270,10 +299,22 @@ class OpenAIService:
             → Analysis: COUNT query + ARCHIVE explicitly mentioned + date filter
             → MCP_TOOL: get_table_stats dsiactivities_archive {{"date_filter": "older_than_6_months"}}
 
+            "count transactions"
+            → Analysis: NEW explicit request - count main transaction table (NOT archive)  
+            → MCP_TOOL: get_table_stats dsitransactionlog {{}}
+            
+            "archived transactions"
+            → Analysis: QUERY operation - user wants to see archived transaction stats/count (NOT delete)
+            → MCP_TOOL: get_table_stats dsitransactionlog_archive {{}}
+            
             "count of archived transactions older than 3 months"
-            → Analysis: COUNT query + ARCHIVE explicitly mentioned + date filter
+            → Analysis: QUERY operation + ARCHIVE explicitly mentioned + date filter
             → MCP_TOOL: get_table_stats dsitransactionlog_archive {{"date_filter": "older_than_3_months"}}
 
+            "count transactions"
+            → Analysis: COUNT query + transactions table + NO archive mentioned → Use MAIN table
+            → MCP_TOOL: get_table_stats dsitransactionlog {{}}
+            
             "list transactions"
             → Analysis: LIST query + transactions table clearly identified + NO archive context
             → MCP_TOOL: get_table_stats dsitransactionlog {{}}
@@ -327,6 +368,26 @@ class OpenAIService:
             → Analysis: Context shows archive transactions + new date filter + PRESERVE archive context
             → MCP_TOOL: get_table_stats dsitransactionlog_archive {{"date_filter": "older_than_5_days"}}
 
+            CRITICAL: DISTINGUISH QUERY vs DELETE OPERATIONS:
+            
+            QUERY OPERATIONS (show/count archived data):
+            "archived transactions" → User wants to SEE archived transactions
+            → Analysis: QUERY operation - show count/stats of archived records
+            → MCP_TOOL: get_table_stats dsitransactionlog_archive {{}}
+            
+            "archived activities older than 6 months" → User wants to SEE archived activities  
+            → Analysis: QUERY operation - show count/stats with date filter
+            → MCP_TOOL: get_table_stats dsiactivities_archive {{"date_filter": "older_than_6_months"}}
+            
+            DELETE OPERATIONS (delete archived data):
+            Previous query: "archived transactions" → User: "delete them"
+            → Analysis: User wants to DELETE archived records from previous query
+            → MCP_TOOL: delete_archived_records dsitransactionlog_archive {{}}
+            
+            Previous query: "archived activities older than 6 months" → User: "delete those"
+            → Analysis: User wants to DELETE archived records with same filter  
+            → MCP_TOOL: delete_archived_records dsiactivities_archive {{"date_filter": "older_than_6_months"}}
+            
             CONTEXTUAL ARCHIVE OPERATIONS (use conversation history):
             Previous: "activities older than 30 days" (got count result) → User: "archive them"
             → Analysis: Context shows previous query about activities older than 30 days + now archive those EXACT records
