@@ -1321,7 +1321,7 @@ class ChatService:
         # Handle case where there are no records to archive
         if count == 0:
             response = f"Archive Result - {region.upper()} Region\n\n"
-            response += f"No records found matching the criteria\n"
+            response += f"No records found matching the criteria (Older than 7 days)\n"
             response += f"Table: {table_name}\n\n"
             response += "No archive operation was needed."
             
@@ -1332,7 +1332,7 @@ class ChatService:
                 "region": region.upper(),
                 "details": [
                     f"Table: {table_name}",
-                    "No records found matching the criteria",
+                    "No records found matching the criteria (Older than 7 days)",
                     "No archive operation was needed"
                 ]
             }
@@ -1426,7 +1426,7 @@ class ChatService:
         # Handle case where there are no records to delete
         if count == 0:
             response = f"Delete Result - {region.upper()} Region\n\n"
-            response += f"No records found matching the criteria\n"
+            response += f"No records found matching the criteria (Older than 30 days)\n"
             response += f"Table: {table_name}\n\n"
             response += "No delete operation was needed."
             
@@ -1437,7 +1437,7 @@ class ChatService:
                 "region": region.upper(),
                 "details": [
                     f"Table: {table_name}",
-                    "No records found matching the criteria",
+                    "No records found matching the criteria (Older than 30 days)",
                     "No delete operation was needed"
                 ]
             }
