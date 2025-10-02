@@ -12,6 +12,17 @@ from datetime import datetime
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
+def _get_archive_table_name(table_name: str) -> str:
+    """Get the correct archive table name for a given main table name"""
+    if table_name == "dsiactivities":
+        return "dsiactivitiesarchive"
+    elif table_name == "dsitransactionlog":
+        return "dsitransactionlogarchive" 
+    elif table_name in ["dsiactivitiesarchive", "dsitransactionlogarchive"]:
+        return table_name  # Already an archive table
+    else:
+        return f"{table_name}archive"  # Fallback for other tables
+
 @router.post("", response_model=ChatResponse)
 async def chat_with_agent(
     message: ChatMessage,
@@ -111,7 +122,7 @@ async def confirm_operation(
             )
             
             if result["success"]:
-                response_text = f"Archive Completed in {confirmation.region.upper()}\n\n{result['records_archived']:,} records successfully archived from {confirmation.table} to {confirmation.table}_archive."
+                response_text = f"Archive Completed in {confirmation.region.upper()}\n\n{result['records_archived']:,} records successfully archived from {confirmation.table} to {_get_archive_table_name(confirmation.table)}."
                 response_type = "operation_success"
             else:
                 response_text = f"Archive failed: {result.get('error', 'Unknown error')}"
@@ -127,7 +138,7 @@ async def confirm_operation(
             )
             
             if result["success"]:
-                response_text = f"Delete Completed in {confirmation.region.upper()}\n\n{result['records_deleted']:,} records permanently deleted from {confirmation.table}_archive."
+                response_text = f"Delete Completed in {confirmation.region.upper()}\n\n{result['records_deleted']:,} records permanently deleted from {_get_archive_table_name(confirmation.table)}."
                 response_type = "operation_success"
             else:
                 response_text = f"Delete failed: {result.get('error', 'Unknown error')}"

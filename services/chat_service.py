@@ -657,7 +657,7 @@ class ChatService:
                             response = f"Archive Operation Completed - {region.upper()} Region\n\n"
                             response += f"Successfully archived {archived_count:,} records\n"
                             response += f"From: {table_name}\n"
-                            response += f"To: {table_name}_archive\n"
+                            response += f"To: {self._get_archive_table_name(table_name)}\n"
                             response += f"Executed by: {user_id}\n\n"
                             response += "Records have been moved from the main table to the archive table."
                             
@@ -668,7 +668,7 @@ class ChatService:
                                 "details": [
                                     f"Successfully archived {archived_count:,} records",
                                     f"From: {table_name}",
-                                    f"To: {table_name}_archive",
+                                    f"To: {self._get_archive_table_name(table_name)}",
                                     f"Executed by: {user_id}"
                                 ]
                             }
@@ -1101,7 +1101,7 @@ class ChatService:
         has_filter = bool(filter_applied or filter_description)
         
         # Plain text response for backward compatibility
-        is_activity_transaction_archive = table_name in ['dsiactivities', 'dsitransactionlog', 'dsiactivities_archive', 'dsitransactionlog_archive']
+        is_activity_transaction_archive = table_name in ['dsiactivities', 'dsitransactionlog', 'dsiactivitiesarchive', 'dsitransactionlogarchive']
         
         response = f"Table Statistics - {region.upper()} Region\n\n"
         response += f"Table: {table_name}\n"
@@ -1278,7 +1278,7 @@ class ChatService:
             response = f"Archive Preview - {region.upper()} Region\n\n"
             response += f"Ready to Archive: **{count:,} records** \n"
             response += f"From Table: {table_name}\n"
-            response += f"To Table: {table_name}_archive\n\n"
+            response += f"To Table: {self._get_archive_table_name(table_name)}\n\n"
             response += f"This will move records from main table to archive table.\n"
             
             # Add safety information about default filters if no specific date filters were provided
@@ -1297,7 +1297,7 @@ class ChatService:
                 "details": [
                     f"Ready to Archive: {count:,} records",
                     f"From Table: {table_name}",
-                    f"To Table: {table_name}_archive",
+                    f"To Table: {self._get_archive_table_name(table_name)}",
                     "This will move records from main table to archive table.",
                     "Click 'CONFIRM ARCHIVE' to proceed or 'CANCEL' to abort."
                 ]
@@ -1350,7 +1350,7 @@ class ChatService:
             response = f"Archive Operation Completed - {region.upper()} Region\n\n"
             response += f"Successfully archived {count:,} records\n"
             response += f"From: {table_name}\n"
-            response += f"To: {table_name}_archive\n\n"
+            response += f"To: {self._get_archive_table_name(table_name)}\n\n"
             response += "Records have been moved from the main table to the archive table."
             
             # Structured content for success
@@ -1361,7 +1361,7 @@ class ChatService:
                 "details": [
                     f"Successfully archived {count:,} records",
                     f"From: {table_name}",
-                    f"To: {table_name}_archive"
+                    f"To: {self._get_archive_table_name(table_name)}"
                 ]
             }
         else:
@@ -1655,6 +1655,17 @@ class ChatService:
                 "timestamp": datetime.now().isoformat()
             }
         }
+
+    def _get_archive_table_name(self, table_name: str) -> str:
+        """Get the correct archive table name for a given main table name"""
+        if table_name == "dsiactivities":
+            return "dsiactivitiesarchive"
+        elif table_name == "dsitransactionlog":
+            return "dsitransactionlogarchive" 
+        elif table_name in ["dsiactivitiesarchive", "dsitransactionlogarchive"]:
+            return table_name  # Already an archive table
+        else:
+            return f"{table_name}archive"  # Fallback for other tables
 
     def _create_error_structured_content(self, error_message: str, region: str) -> Dict[str, Any]:
         """Create structured content for error responses"""

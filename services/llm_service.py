@@ -49,7 +49,7 @@ class OpenAIService:
             context_lower = conversation_context.lower()
             
             table_mentions = []
-            for table in ["dsitransactionlog_archive", "dsiactivities_archive", "dsitransactionlog", "dsiactivities"]:
+            for table in ["dsitransactionlogarchive", "dsiactivitiesarchive", "dsitransactionlog", "dsiactivities"]:
                 if table in context_lower:
                     # Find the position of the last mention
                     last_pos = context_lower.rfind(table)
@@ -86,10 +86,10 @@ class OpenAIService:
         """Determine table name using message content and context"""
         user_msg_lower = user_message.lower()
         
-        if "dsitransactionlog_archive" in user_msg_lower:
-            return "dsitransactionlog_archive"
-        elif "dsiactivities_archive" in user_msg_lower:
-            return "dsiactivities_archive"
+        if "dsitransactionlogarchive" in user_msg_lower:
+            return "dsitransactionlogarchive"
+        elif "dsiactivitiesarchive" in user_msg_lower:
+            return "dsiactivitiesarchive"
         elif "dsitransactionlog" in user_msg_lower and "archive" not in user_msg_lower:
             return "dsitransactionlog"
         elif "dsiactivities" in user_msg_lower and "archive" not in user_msg_lower:
@@ -111,12 +111,12 @@ class OpenAIService:
         if "transaction" in user_msg_lower:
             # "transactions older than X" or "show transactions" → use main table
             if "archive" in user_msg_lower:
-                return "dsitransactionlog_archive"
+                return "dsitransactionlogarchive"
             return "dsitransactionlog"
         elif "activit" in user_msg_lower:
             # "activities older than X" or "show activities" → use main table  
             if "archive" in user_msg_lower:
-                return "dsiactivities_archive"
+                return "dsiactivitiesarchive"
             return "dsiactivities"
         
 
@@ -187,8 +187,8 @@ class OpenAIService:
             Available Database Tables:
             - dsiactivities: Main activity logs (current records)
             - dsitransactionlog: Main transaction logs (current records)  
-            - dsiactivities_archive: Archived activity logs (old records)
-            - dsitransactionlog_archive: Archived transaction logs (old records)
+            - dsiactivitiesarchive: Archived activity logs (old records)
+            - dsitransactionlogarchive: Archived transaction logs (old records)
 
             Available MCP Tools:
             1. get_table_stats - Use for ACTIVITIES/TRANSACTIONS/ARCHIVE queries (shows counts, not records)
@@ -205,10 +205,10 @@ class OpenAIService:
             - Look for previous queries to understand what table/operation user is referring to
             - Context patterns: "for then", "what about", "how about", "and for", "also for", "archive them", "delete them", "those records", "count", "count them", "show count"
             - Example: Previous "activities older than 30 days" → "archive them" = MUST use both "dsiactivities" table AND "older_than_30_days" filter
-            - Example: Previous "archived transactions older than 10 days" → "count" = MUST use "dsitransactionlog_archive" table (preserve archive context)
-            - Example: Previous "archived transactions older than 10 days" → "delete them" = MUST use "dsitransactionlog_archive" table (preserve archive context)
-            - Example: Previous "archived activities older than 30 days" → "delete them" = MUST use "dsiactivities_archive" table (preserve archive context)
-            - Example: Previous "archived transactions" → "delete those records" = MUST use "dsitransactionlog_archive" table (preserve archive context)
+            - Example: Previous "archived transactions older than 10 days" → "count" = MUST use "dsitransactionlogarchive" table (preserve archive context)
+            - Example: Previous "archived transactions older than 10 days" → "delete them" = MUST use "dsitransactionlogarchive" table (preserve archive context)
+            - Example: Previous "archived activities older than 30 days" → "delete them" = MUST use "dsiactivitiesarchive" table (preserve archive context)
+            - Example: Previous "archived transactions" → "delete those records" = MUST use "dsitransactionlogarchive" table (preserve archive context)
             - Example: Previous "archived activities older than 30 days" → "show transactions" = MUST use "dsitransactionlog" table (NEW explicit table request)
             
             TABLE CONTINUITY RULES - CRITICAL:
@@ -220,8 +220,8 @@ class OpenAIService:
             - SMART CONTEXT DECISION: Use your intelligence to determine if the query references previous results or is a new request:
               * References to previous: "archive them", "delete those", "count", "older than X", "yes archive", "remove all that data" → PRESERVE previous table context
               * New explicit requests: "show activities", "transactions older than X", "archive activities" → Use specified table type
-              * CRITICAL: After "archived transactions" query, "delete them" MUST use dsitransactionlog_archive (preserve archive context)
-              * CRITICAL: After "archived activities" query, "delete them" MUST use dsiactivities_archive (preserve archive context)
+              * CRITICAL: After "archived transactions" query, "delete them" MUST use dsitransactionlogarchive (preserve archive context)
+              * CRITICAL: After "archived activities" query, "delete them" MUST use dsiactivitiesarchive (preserve archive context)
               * Use natural language understanding rather than rigid keyword matching
             
             CONFIRMATION HANDLING:
@@ -259,7 +259,7 @@ class OpenAIService:
             - DELETE operations require explicit confirmation or follow-up commands like "delete them"
             - MAIN vs ARCHIVE TABLE SELECTION:
               * "count transactions", "show transactions", "list transactions" → Use MAIN table (dsitransactionlog)
-              * "count archived transactions", "show archived transactions" → Use ARCHIVE table (dsitransactionlog_archive)
+              * "count archived transactions", "show archived transactions" → Use ARCHIVE table (dsitransactionlogarchive)
               * Only use archive tables when "archive" or "archived" is explicitly mentioned
             - GENERAL DATABASE STATS (e.g., "show table statistics", "database statistics") → use get_table_stats with NO table name (leave empty)
             - REGION QUERIES: "which region", "current region", "region status", "connected regions", "what region" → ALWAYS use region_status
@@ -297,7 +297,7 @@ class OpenAIService:
 
             "count of archived activities older than 6 months"
             → Analysis: COUNT query + ARCHIVE explicitly mentioned + date filter
-            → MCP_TOOL: get_table_stats dsiactivities_archive {{"date_filter": "older_than_6_months"}}
+            → MCP_TOOL: get_table_stats dsiactivitiesarchive {{"date_filter": "older_than_6_months"}}
 
             "count transactions"
             → Analysis: NEW explicit request - count main transaction table (NOT archive)  
@@ -305,11 +305,11 @@ class OpenAIService:
             
             "archived transactions"
             → Analysis: QUERY operation - user wants to see archived transaction stats/count (NOT delete)
-            → MCP_TOOL: get_table_stats dsitransactionlog_archive {{}}
+            → MCP_TOOL: get_table_stats dsitransactionlogarchive {{}}
             
             "count of archived transactions older than 3 months"
             → Analysis: QUERY operation + ARCHIVE explicitly mentioned + date filter
-            → MCP_TOOL: get_table_stats dsitransactionlog_archive {{"date_filter": "older_than_3_months"}}
+            → MCP_TOOL: get_table_stats dsitransactionlogarchive {{"date_filter": "older_than_3_months"}}
 
             "count transactions"
             → Analysis: COUNT query + transactions table + NO archive mentioned → Use MAIN table
@@ -350,7 +350,7 @@ class OpenAIService:
 
             Previous: "count of archived transactions" → User: "older than 20 days"
             → Analysis: Context shows previous query was about ARCHIVE transactions + new date filter + PRESERVE archive context
-            → MCP_TOOL: get_table_stats dsitransactionlog_archive {{"date_filter": "older_than_20_days"}}
+            → MCP_TOOL: get_table_stats dsitransactionlogarchive {{"date_filter": "older_than_20_days"}}
 
             Previous: "show transactions" → User: "count"
             → Analysis: Context shows previous query was about transactions + now count same table
@@ -362,31 +362,31 @@ class OpenAIService:
 
             Previous: "show archive records" → User: "for activities only"
             → Analysis: Context shows archive request + now specify activities archive
-            → MCP_TOOL: get_table_stats dsiactivities_archive {{}}
+            → MCP_TOOL: get_table_stats dsiactivitiesarchive {{}}
 
             Previous: "show archived transactions" → User: "older than 5 days"
             → Analysis: Context shows archive transactions + new date filter + PRESERVE archive context
-            → MCP_TOOL: get_table_stats dsitransactionlog_archive {{"date_filter": "older_than_5_days"}}
+            → MCP_TOOL: get_table_stats dsitransactionlogarchive {{"date_filter": "older_than_5_days"}}
 
             CRITICAL: DISTINGUISH QUERY vs DELETE OPERATIONS:
             
             QUERY OPERATIONS (show/count archived data):
             "archived transactions" → User wants to SEE archived transactions
             → Analysis: QUERY operation - show count/stats of archived records
-            → MCP_TOOL: get_table_stats dsitransactionlog_archive {{}}
+            → MCP_TOOL: get_table_stats dsitransactionlogarchive {{}}
             
             "archived activities older than 6 months" → User wants to SEE archived activities  
             → Analysis: QUERY operation - show count/stats with date filter
-            → MCP_TOOL: get_table_stats dsiactivities_archive {{"date_filter": "older_than_6_months"}}
+            → MCP_TOOL: get_table_stats dsiactivitiesarchive {{"date_filter": "older_than_6_months"}}
             
             DELETE OPERATIONS (delete archived data):
             Previous query: "archived transactions" → User: "delete them"
             → Analysis: User wants to DELETE archived records from previous query
-            → MCP_TOOL: delete_archived_records dsitransactionlog_archive {{}}
+            → MCP_TOOL: delete_archived_records dsitransactionlogarchive {{}}
             
             Previous query: "archived activities older than 6 months" → User: "delete those"
             → Analysis: User wants to DELETE archived records with same filter  
-            → MCP_TOOL: delete_archived_records dsiactivities_archive {{"date_filter": "older_than_6_months"}}
+            → MCP_TOOL: delete_archived_records dsiactivitiesarchive {{"date_filter": "older_than_6_months"}}
             
             CONTEXTUAL ARCHIVE OPERATIONS (use conversation history):
             Previous: "activities older than 30 days" (got count result) → User: "archive them"
@@ -605,7 +605,7 @@ class OpenAIService:
                 return InvalidToolResult(tool_name)
             
             # Validate table name if provided (some tools don't need table names)
-            valid_tables = ["dsiactivities", "dsitransactionlog", "dsiactivities_archive", "dsitransactionlog_archive", ""]
+            valid_tables = ["dsiactivities", "dsitransactionlog", "dsiactivitiesarchive", "dsitransactionlogarchive", ""]
             requires_table = tool_name not in tools_without_tables
             
             if table_name and table_name not in valid_tables:
@@ -619,8 +619,8 @@ class OpenAIService:
                             "Available Tables:\n\n"
                             "• dsiactivities - Current activity logs\n"
                             "• dsitransactionlog - Current transaction logs\n"
-                            "• dsiactivities_archive - Archived activity logs\n"
-                            "• dsitransactionlog_archive - Archived transaction logs\n\n"
+                            "• dsiactivitiesarchive - Archived activity logs\n"
+                            "• dsitransactionlogarchive - Archived transaction logs\n\n"
                         )
                         self.is_database_operation = False
                         self.tool_used = None
@@ -845,8 +845,8 @@ class OpenAIService:
                     "Available Tables:\n"
                     "• dsiactivities - Current activity logs\n"
                     "• dsitransactionlog - Current transaction logs\n"
-                    "• dsiactivities_archive - Archived activity logs\n"
-                    "• dsitransactionlog_archive - Archived transaction logs\n\n"
+                    "• dsiactivitiesarchive - Archived activity logs\n"
+                    "• dsitransactionlogarchive - Archived transaction logs\n\n"
                 )
             elif "CLARIFY_FILTERS_NEEDED" in llm_response:
                 clarification_message = (
@@ -941,7 +941,7 @@ class OpenAIService:
 
             **7. SPECIFIC DATABASE OPERATIONS:**
             • For clear requests about tables, archiving, statistics - Process normally and provide structured responses
-            • Available tables: dsiactivities, dsitransactionlog, dsiactivities_archive, dsitransactionlog_archive
+            • Available tables: dsiactivities, dsitransactionlog, dsiactivitiesarchive, dsitransactionlogarchive
 
             **8. ERROR HANDLING GUIDELINES:**
             • Don't always default to the same clarification message
@@ -972,7 +972,7 @@ class OpenAIService:
 
             User: "Show me something" → "I'd be happy to show you information! Could you be more specific about what you'd like to see? For example:\n• 'Show activities statistics'\n• 'Count transactions from last month'\n• 'Display archive table information'\n• 'Show database health status'\n\nWhat type of data are you interested in?"
 
-            User: "Archive policy?" → "Our archiving policy includes several safety measures:\n• Records must be older than 7 days before archiving\n• Only archived records older than 30 days can be deleted\n• All operations require confirmation and are logged\n• Archive operations move data to dedicated archive tables (dsiactivities_archive, dsitransactionlog_archive)\n\nWould you like to see statistics for any specific table or learn about performing an archive operation?"
+            User: "Archive policy?" → "Our archiving policy includes several safety measures:\n• Records must be older than 7 days before archiving\n• Only archived records older than 30 days can be deleted\n• All operations require confirmation and are logged\n• Archive operations move data to dedicated archive tables (dsiactivitiesarchive, dsitransactionlogarchive)\n\nWould you like to see statistics for any specific table or learn about performing an archive operation?"
 
             User: "Which region is connected?" → [Use region_status tool to show current region connections, available regions, and connection status for all regions]
 
@@ -1097,8 +1097,8 @@ class OpenAIService:
                            "Available Tables:\n\n"
                            "• dsiactivities - Current activity logs\n"
                            "• dsitransactionlog - Current transaction logs\n"
-                           "• dsiactivities_archive - Archived activity logs\n"
-                           "• dsitransactionlog_archive - Archived transaction logs\n\n",
+                           "• dsiactivitiesarchive - Archived activity logs\n"
+                           "• dsitransactionlogarchive - Archived transaction logs\n\n",
                 "suggestions": [
                     "Show activities statistics",
                     "Which region is connected?",

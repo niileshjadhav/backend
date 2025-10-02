@@ -32,7 +32,7 @@ class DSIActivities(Base):
 
 
 class ArchiveDSIActivities(Base):
-    __tablename__ = "dsiactivities_archive"
+    __tablename__ = "dsiactivitiesarchive"
     
     SequenceID = Column(Integer, primary_key=True, autoincrement=True)
     ActivityID = Column(String(50))

@@ -26,9 +26,9 @@ def setup_database_logging(name: str = __name__) -> logging.Logger:
 # Common table definitions
 REQUIRED_TABLES = [
     'dsiactivities',
-    'dsiactivities_archive', 
+    'dsiactivitiesarchive', 
     'dsitransactionlog',
-    'dsitransactionlog_archive'
+    'dsitransactionlogarchive'
 ]
 
 class DatabaseService:
@@ -41,8 +41,8 @@ class DatabaseService:
         # Configuration constants
         self.MAX_RECORDS_PER_QUERY = 10000
         self.DEFAULT_QUERY_LIMIT = None  # No default limit
-        self.VALID_TABLE_NAMES = ["dsiactivities", "dsitransactionlog", "dsiactivities_archive", "dsitransactionlog_archive"]
-        self.ARCHIVE_TABLE_NAMES = ["dsiactivities_archive", "dsitransactionlog_archive"]
+        self.VALID_TABLE_NAMES = ["dsiactivities", "dsitransactionlog", "dsiactivitiesarchive", "dsitransactionlogarchive"]
+        self.ARCHIVE_TABLE_NAMES = ["dsiactivitiesarchive", "dsitransactionlogarchive"]
     
     def validate_table_name(self, table_name: str) -> bool:
         """Validate if table name is supported"""
@@ -73,7 +73,7 @@ class DatabaseService:
                         try:
                             archive_count = self.db.query(func.count(ArchiveDSIActivities.SequenceID)).scalar()
                         except Exception as e:
-                            logger.warning(f"Archive table {table}_archive not found or error: {e}")
+                            logger.warning(f"Archive table dsiactivitiesarchive not found or error: {e}")
                             archive_count = 0
                             
                     elif table == 'dsitransactionlog':
@@ -88,7 +88,7 @@ class DatabaseService:
                         try:
                             archive_count = self.db.query(func.count(ArchiveDSITransactionLog.RecordID)).scalar()
                         except Exception as e:
-                            logger.warning(f"Archive table {table}_archive not found or error: {e}")
+                            logger.warning(f"Archive table dsitransactionlogarchive not found or error: {e}")
                             archive_count = 0
                     else:
                         continue
@@ -155,13 +155,13 @@ class DatabaseService:
             # Archive tables statistics
             archive_tables = [
                 {
-                    'name': 'dsiactivities_archive',
+                    'name': 'dsiactivitiesarchive',
                     'display_name': 'DSI Activities Archive',
                     'model': ArchiveDSIActivities,
                     'time_column': 'PostedTime'
                 },
                 {
-                    'name': 'dsitransactionlog_archive',
+                    'name': 'dsitransactionlogarchive',
                     'display_name': 'DSI Transaction Log Archive', 
                     'model': ArchiveDSITransactionLog,
                     'time_column': 'WhenReceived'
@@ -392,8 +392,13 @@ class DatabaseService:
                         except ValueError:
                             pass  # Invalid date format, skip validation
             
-            # Get archive table name
-            archive_table = f"{table_name}_archive"
+            # Get archive table name using new naming convention
+            if table_name == "dsiactivities":
+                archive_table = "dsiactivitiesarchive"
+            elif table_name == "dsitransactionlog":
+                archive_table = "dsitransactionlogarchive"
+            else:
+                archive_table = f"{table_name}archive"  # Fallback for other tables
             
             if dry_run:
                 # Count records that would be deleted

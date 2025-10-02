@@ -20,6 +20,17 @@ class CRUDService:
     def __init__(self, db_session: Session):
         self.db = db_session
         self.auth_service = AuthService()
+    
+    def _get_archive_table_name(self, table_name: str) -> str:
+        """Get the correct archive table name for a given main table name"""
+        if table_name == "dsiactivities":
+            return "dsiactivitiesarchive"
+        elif table_name == "dsitransactionlog":
+            return "dsitransactionlogarchive" 
+        elif table_name in ["dsiactivitiesarchive", "dsitransactionlogarchive"]:
+            return table_name  # Already an archive table
+        else:
+            return f"{table_name}archive"  # Fallback for other tables
       
     async def execute_archive_operation(
         self, 
@@ -191,7 +202,7 @@ class CRUDService:
                 # Create audit log entry
                 audit_entry = AuditLog(
                     operation_type="delete",
-                    table_name=f"{operation.table}_archive",
+                    table_name=self._get_archive_table_name(operation.table),
                     user_id=user_id,
                     date_range_start=operation.filters.get("date_start"),
                     date_range_end=operation.filters.get("date_end"),
@@ -219,10 +230,10 @@ class CRUDService:
                 return {
                     "success": True,
                     "operation": "DELETE",
-                    "table": f"{operation.table}_archive",
+                    "table": self._get_archive_table_name(operation.table),
                     "records_deleted": deleted_count,
                     "audit_id": audit_entry.id,
-                    "message": f"Successfully deleted {deleted_count} records from {operation.table}_archive"
+                    "message": f"Successfully deleted {deleted_count} records from {self._get_archive_table_name(operation.table)}"
                 }
                 
             except Exception as e:
@@ -256,7 +267,7 @@ class CRUDService:
             "table": operation.table,
             "preview_count": record_count,
             "sample_records": [self._record_to_dict(record) for record in sample_records],
-            "message": f"Preview: {record_count:,} records will be archived from {operation.table} to {operation.table}_archive",
+            "message": f"Preview: {record_count:,} records will be archived from {operation.table} to {self._get_archive_table_name(operation.table)}",
             "filters_applied": operation.filters,
             "safety_check": "Records will be copied to archive table before deletion from main table"
         }
@@ -330,7 +341,7 @@ class CRUDService:
         where_clause = " AND ".join(where_conditions) if where_conditions else "1=1"
         
         # Archive query - copy to archive table with explicit column mapping
-        archive_table = f"{operation.table}_archive"
+        archive_table = self._get_archive_table_name(operation.table)
         main_table = operation.table
         
         # Get column names from main table (excluding the archive-specific columns)
@@ -405,9 +416,9 @@ class CRUDService:
             return DSIActivities, ArchiveDSIActivities
         elif table_name == "dsitransactionlog":
             return DSITransactionLog, ArchiveDSITransactionLog
-        elif table_name == "dsiactivities_archive":
+        elif table_name == "dsiactivitiesarchive":
             return ArchiveDSIActivities, ArchiveDSIActivities  # Archive table as both main and archive
-        elif table_name == "dsitransactionlog_archive":
+        elif table_name == "dsitransactionlogarchive":
             return ArchiveDSITransactionLog, ArchiveDSITransactionLog  # Archive table as both main and archive
         else:
             raise ValueError(f"Unsupported table: {table_name}")

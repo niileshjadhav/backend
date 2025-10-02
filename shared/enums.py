@@ -6,8 +6,8 @@ class TableName(Enum):
     """Supported table names"""
     DSI_ACTIVITIES = "dsiactivities"
     DSI_TRANSACTION_LOG = "dsitransactionlog"
-    DSI_ACTIVITIES_ARCHIVE = "dsiactivities_archive"
-    DSI_TRANSACTION_LOG_ARCHIVE = "dsitransactionlog_archive"
+    DSI_ACTIVITIES_ARCHIVE = "dsiactivitiesarchive"
+    DSI_TRANSACTION_LOG_ARCHIVE = "dsitransactionlogarchive"
     
     @classmethod
     def get_valid_names(cls) -> list[str]:

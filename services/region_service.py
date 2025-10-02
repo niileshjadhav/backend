@@ -200,8 +200,13 @@ class RegionService:
                         result = conn.execute(text(f"SELECT COUNT(*) FROM {table}")).fetchone()
                         tables_info[table] = result[0] if result else 0
                         
-                        # Also check archive table (use correct naming convention: table_archive)
-                        archive_table = f"{table}_archive"
+                        # Also check archive table (use correct naming convention)
+                        if table == "dsiactivities":
+                            archive_table = "dsiactivitiesarchive"
+                        elif table == "dsitransactionlog":
+                            archive_table = "dsitransactionlogarchive"
+                        else:
+                            archive_table = f"{table}archive"  # Fallback for other tables
                         try:
                             result = conn.execute(text(f"SELECT COUNT(*) FROM {archive_table}")).fetchone()
                             tables_info[archive_table] = result[0] if result else 0

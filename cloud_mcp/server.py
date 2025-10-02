@@ -283,7 +283,15 @@ async def _delete_archived_records(
             from schemas import ParsedOperation
             
             # For delete operations, we target archive tables
-            archive_table_name = f"{table_name}_archive" if not table_name.endswith("_archive") else table_name
+            # Map main table names to archive table names using new naming convention
+            if table_name == "dsiactivities":
+                archive_table_name = "dsiactivitiesarchive"
+            elif table_name == "dsitransactionlog":
+                archive_table_name = "dsitransactionlogarchive"
+            elif table_name in ["dsiactivitiesarchive", "dsitransactionlogarchive"]:
+                archive_table_name = table_name  # Already an archive table
+            else:
+                archive_table_name = f"{table_name}archive"  # Fallback for other tables
             
             mock_operation = ParsedOperation(
                 action="DELETE",
@@ -351,8 +359,8 @@ async def _get_table_stats(
             model_map = {
                 "dsiactivities": DSIActivities,
                 "dsitransactionlog": DSITransactionLog,
-                "dsiactivities_archive": ArchiveDSIActivities,
-                "dsitransactionlog_archive": ArchiveDSITransactionLog
+                "dsiactivitiesarchive": ArchiveDSIActivities,
+                "dsitransactionlogarchive": ArchiveDSITransactionLog
             }
             
             if table_name not in model_map:
@@ -746,7 +754,15 @@ async def _execute_confirmed_delete(
             from schemas import ParsedOperation
             
             # For delete operations, we target archive tables
-            archive_table_name = f"{table_name}_archive" if not table_name.endswith("_archive") else table_name
+            # Map main table names to archive table names using new naming convention
+            if table_name == "dsiactivities":
+                archive_table_name = "dsiactivitiesarchive"
+            elif table_name == "dsitransactionlog":
+                archive_table_name = "dsitransactionlogarchive"
+            elif table_name in ["dsiactivitiesarchive", "dsitransactionlogarchive"]:
+                archive_table_name = table_name  # Already an archive table
+            else:
+                archive_table_name = f"{table_name}archive"  # Fallback for other tables
             
             mock_operation = ParsedOperation(
                 action="DELETE",

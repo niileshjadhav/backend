@@ -41,7 +41,7 @@ class DSITransactionLog(Base):
 
 
 class ArchiveDSITransactionLog(Base):
-    __tablename__ = "dsitransactionlog_archive"
+    __tablename__ = "dsitransactionlogarchive"
     
     RecordID = Column(Integer, primary_key=True, autoincrement=True)
     RecordStatus = Column(String(1))
