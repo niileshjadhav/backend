@@ -12,6 +12,8 @@ from database import get_db
 from services.crud_service import CRUDService
 from models.activities import DSIActivities, ArchiveDSIActivities
 from models.transactions import DSITransactionLog, ArchiveDSITransactionLog
+from models.job_logs import JobLogs
+from services.job_logs_service import JobLogsService
 from datetime import datetime
 
 def format_database_date(date_str: str) -> str:
@@ -562,6 +564,343 @@ async def _health_check() -> Dict[str, Any]:
             "timestamp": datetime.now().isoformat()
         }
 
+async def _query_job_logs(
+    filters: Optional[Dict[str, Any]] = None,
+    limit: int = 100,
+    offset: int = 0,
+    order_by: str = "started_at",
+    order_direction: str = "desc"
+) -> Dict[str, Any]:
+    """Query job logs with various filters and return structured content"""
+    try:
+        from services.region_service import get_region_service
+        
+        # Extract query parameters from filters if they exist there
+        if filters:
+            # Extract limit, offset, order_by, order_direction from filters and use as parameters
+            # Note: format parameter is preserved in filters for later use in table formatting
+            limit = filters.pop("limit", limit)
+            offset = filters.pop("offset", offset) 
+            order_by = filters.pop("order_by", order_by)
+            order_direction = filters.pop("order_direction", order_direction)
+            # Keep format parameter in filters for table formatting logic
+        
+        db_gen = get_db()
+        db = next(db_gen)
+        
+        try:
+            job_logs_service = JobLogsService(db)
+            result = job_logs_service.query_job_logs(
+                filters=filters,
+                limit=limit,
+                offset=offset,
+                order_by=order_by,
+                order_direction=order_direction
+            )
+            
+            if not result.get('success'):
+                return {
+                    "type": "error_card",
+                    "title": "Job Logs Query Error",
+                    "region": get_region_service().get_current_region() or "Unknown",
+                    "error_message": result.get('error', 'Unknown error occurred'),
+                    "suggestions": [
+                        "Check your filters and try again",
+                        "Show me all job logs",
+                        "Get job summary statistics"
+                    ]
+                }
+            
+            # Format records for display
+            records = result.get('records', [])
+            total_count = result.get('total_count', 0)
+            
+            # Create structured content for job logs table
+            if not records:
+                # Format filter message more clearly
+                filter_msg = "None"
+                if filters:
+                    filter_parts = [f"{k} = {v}" for k, v in filters.items()]
+                    filter_msg = ", ".join(filter_parts)
+                
+                return {
+                    "type": "conversational_card",
+                    "title": "Job Logs",
+                    "region": get_region_service().get_current_region() or "Unknown",
+                    "user_role": "Admin",
+                    "content": f"No job logs found matching criteria.\n\nTotal records in database: {total_count}",
+                    "suggestions": [
+                        "Show job statistics",
+                        "Show all jobs",
+                        "Show recent jobs"
+                    ]
+                }
+            
+            # Check if reason-only format is requested
+            if filters and filters.get('format') == 'reason_only':
+                if records:
+                    reason = records[0].get('reason', 'No reason provided')
+                    job_info = records[0]
+                    
+                    return {
+                        "type": "conversational_card",
+                        "title": "Job Status",
+                        "region": get_region_service().get_current_region() or "Unknown",
+                        "user_role": "Admin",
+                        "content": f"{reason}\n\nTable: {job_info.get('table_name', 'Unknown')}",
+                        "suggestions": []
+                    }
+                else:
+                    return {
+                        "type": "conversational_card",
+                        "title": "No Jobs Found",
+                        "region": get_region_service().get_current_region() or "Unknown", 
+                        "user_role": "Admin",
+                        "content": "No jobs found in the system.",
+                        "suggestions": []
+                    }
+            
+            # Check if detailed table format is requested
+            show_table = (
+                (filters and filters.get('format') == 'table') or 
+                len(records) <= 5 or
+                any(keyword in str(filters).lower() for keyword in ['detail', 'table', 'full']) if filters else False
+            )
+            
+            # Always use table format if explicitly requested via format parameter
+            if filters and filters.get('format') == 'table':
+                show_table = True
+            
+            if show_table:  # Use table format when requested or for smaller result sets
+                # Calculate summary stats
+                summary_stats = {
+                    'successful': len([r for r in records if r.get('status') == 'SUCCESS']),
+                    'failed': len([r for r in records if r.get('status') == 'FAILED']),
+                    'in_progress': len([r for r in records if r.get('status') == 'IN_PROGRESS'])
+                }
+                
+                return {
+                    "type": "job_logs_table",
+                    "title": "Job Logs",
+                    "region": get_region_service().get_current_region() or "Unknown",
+                    "records": records,
+                    "total_count": total_count,
+                    "filters_applied": filters or {},
+                    "suggestions": []
+                }
+            
+            # Create job logs summary content for larger result sets
+            if len(records) > 1:
+                table_content = f"Found {len(records)} job logs (showing {offset + 1}-{offset + len(records)} of {total_count} total):\n\n"
+            else:
+                table_content = f"Found {len(records)} job logs:\n\n"
+            
+            for i, record in enumerate(records[:10]):  # Limit to first 10 for display
+                started_time = record.get('started_at', '')
+                if started_time:
+                    try:
+                        from datetime import datetime
+                        dt = datetime.fromisoformat(started_time.replace('Z', '+00:00'))
+                        started_time = dt.strftime('%m/%d %H:%M')
+                    except:
+                        started_time = started_time[:16] if len(started_time) > 16 else started_time
+                
+                duration = record.get('duration_seconds', 0)
+                duration_str = f"{duration:.1f}s" if duration and duration > 0 else "-"
+                
+                table_content += f"{i+1:2d}. [{record.get('status', 'UNKNOWN')}] [{record.get('job_type', 'UNKNOWN')}] [{record.get('id', '?')}] {record.get('table_name', 'Unknown')}\n"
+                table_content += f"    Records: {record.get('records_affected', 0):,} | Duration: {duration_str} | Started: {started_time}\n"
+                
+                reason = record.get('reason', '')
+                if reason:
+                    reason_short = reason[:80] + '...' if len(reason) > 80 else reason
+                    table_content += f"    Reason: {reason_short}\n"
+                table_content += "\n"
+            
+            if len(records) > 10:
+                table_content += f"... and {len(records) - 10} more records\n"
+            
+            # Add filter info if applied
+            if filters:
+                table_content += f"\nFilters applied: {', '.join([f'{k}={v}' for k, v in filters.items()])}\n"
+            
+            return {
+                "type": "conversational_card",
+                "title": "Job Logs",
+                "region": get_region_service().get_current_region() or "Unknown",
+                "user_role": "Admin",
+                "content": table_content
+            }
+            
+        finally:
+            db.close()
+            
+    except Exception as e:
+        logger.error(f"Error in query_job_logs: {e}")
+        return {
+            "type": "error_card",
+            "title": "Job Logs Query Error",
+            "region": "Unknown",
+            "error_message": str(e),
+            "suggestions": [
+                "Try a simpler query",
+                "Show me recent job logs",
+                "Get job summary statistics"
+            ]
+        }
+
+async def _get_job_summary_stats(
+    filters: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """Get summary statistics for job logs and return structured content"""
+    try:
+        from services.region_service import get_region_service
+        
+        db_gen = get_db()
+        db = next(db_gen)
+        
+        try:
+            job_logs_service = JobLogsService(db)
+            result = job_logs_service.get_job_summary_stats(filters=filters)
+            
+            if not result.get('success'):
+                return {
+                    "type": "error_card",
+                    "title": "Job Summary Error",
+                    "region": get_region_service().get_current_region() or "Unknown",
+                    "error_message": result.get('error', 'Failed to get job statistics'),
+                    "suggestions": [
+                        "Show me recent job logs",
+                    ]
+                }
+            
+            summary = result.get('summary', {})
+            job_types = result.get('job_types', [])
+            tables = result.get('tables', [])
+            records_stats = result.get('records_stats', {})
+            
+            # Check if count_only format is requested
+            if filters and filters.get('format') == 'count_only':
+                count_type = filters.get('count_type', 'total')
+                date_range = filters.get('date_range', None)
+                region = get_region_service().get_current_region() or "Unknown"
+                
+                # Create date suffix for title and label
+                date_suffix = ""
+                if date_range:
+                    if date_range == "last_month":
+                        date_suffix = " (Last Month)"
+                    elif date_range == "today":
+                        date_suffix = " (Today)"
+                    elif date_range == "this_week":
+                        date_suffix = " (This Week)"
+                    elif date_range == "this_month":
+                        date_suffix = " (This Month)"
+                
+                if count_type == 'successful':
+                    count_value = summary.get('successful_jobs', 0)
+                    title = f"Job Statistics"
+                    label = f"Successful Jobs\n{date_suffix}"
+                elif count_type == 'failed':
+                    count_value = summary.get('failed_jobs', 0)
+                    title = f"Job Statistics"
+                    label = f"Failed Jobs\n{date_suffix}"
+                else:  # total
+                    count_value = summary.get('total_jobs', 0)
+                    title = f"Job Statistics"
+                    label = f"Total Jobs\n{date_suffix}"
+                
+                return {
+                    "type": "stats_card",
+                    "title": title,
+                    "region": region,
+                    "table_name": "",
+                    "stats": [
+                        {
+                            "label": label,
+                            "value": str(count_value),
+                            "type": "number",
+                            "highlight": True
+                        }
+                    ]
+                }
+            
+            # Create stats for the stats card
+            stats = [
+                {
+                    "label": "Total Jobs",
+                    "value": str(summary.get('total_jobs', 0)),
+                    "type": "number",
+                    "highlight": True
+                },
+                {
+                    "label": "Successful",
+                    "value": str(summary.get('successful_jobs', 0)),
+                    "type": "number",
+                    "highlight": False
+                },
+                {
+                    "label": "Failed",
+                    "value": str(summary.get('failed_jobs', 0)),
+                    "type": "number",
+                    "highlight": summary.get('failed_jobs', 0) > 0
+                },
+                # {
+                #     "label": "Success Rate",
+                #     "value": f"{summary.get('success_rate', 0):.1f}%",
+                #     "type": "percentage",
+                #     "highlight": summary.get('success_rate', 0) < 95
+                # }
+            ]
+            
+            # Create additional details for job types and tables
+            details = []
+            
+            if job_types:
+                job_type_details = ", ".join([f"{jt['job_type']}: {jt['count']}" for jt in job_types[:3]])
+                details.append(f"Job Types: {job_type_details}")
+            
+            if tables:
+                table_details = ", ".join([f"{t['table_name']}: {t['count']}" for t in tables[:3]])
+                details.append(f"Top Tables: {table_details}")
+            
+            if records_stats.get('max_records_in_job', 0) > 0:
+                details.append(f"Largest Job: {records_stats['max_records_in_job']:,} records")
+            
+            filter_description = ""
+            if filters:
+                filter_parts = []
+                for key, value in filters.items():
+                    filter_parts.append(str(value))
+                filter_description = f" {', '.join(filter_parts)}"
+            
+            return {
+                "type": "stats_card",
+                "title": f"Job Statistics",
+                "region": get_region_service().get_current_region() or "Unknown",
+                "table_name": "",
+                "filter_description": filter_description,
+                "stats": stats,
+                "details": details
+            }
+            
+        finally:
+            db.close()
+            
+    except Exception as e:
+        logger.error(f"Error in get_job_summary_stats: {e}")
+        return {
+            "type": "error_card",
+            "title": "Job Summary Error",
+            "region": "Unknown",
+            "error_message": str(e),
+            "suggestions": [
+                "Try again",
+                "Show me recent job logs",
+                "Check system status"
+            ]
+        }
+
 async def _execute_confirmed_archive(
     table_name: str,
     filters: Dict[str, Any],
@@ -840,6 +1179,58 @@ async def mcp_health_check() -> Dict[str, Any]:
     """Health check for the MCP server"""
     return await _health_check()
 
+@mcp.tool(name="query_job_logs")
+async def mcp_query_job_logs(
+    filters: Optional[Dict[str, Any]] = None,
+    limit: int = 100,
+    offset: int = 0,
+    order_by: str = "started_at",
+    order_direction: str = "desc"
+) -> Dict[str, Any]:
+    """Query job logs with various filters
+    
+    Available filters:
+    - status: str or list (IN_PROGRESS, SUCCESS, FAILED)
+    - job_type: str or list (DELETE, ARCHIVE, OTHER)
+    - table_name: str or list (table names)
+    - schema_name: str or list (schema names)
+    - id: int or list (job IDs)
+    - min_records_affected: int
+    - max_records_affected: int
+    - started_after: ISO datetime string
+    - started_before: ISO datetime string
+    - finished_after: ISO datetime string
+    - finished_before: ISO datetime string
+    - date_range: str (today, yesterday, this_week, this_month, last_7_days, last_30_days)
+    - reason_contains: str (text search in reason field)
+    - failed_only: bool
+    - successful_only: bool
+    - in_progress_only: bool
+    - zero_records_only: bool
+    - has_records_only: bool
+    
+    Available order_by fields: id, job_type, table_name, status, records_affected, started_at, finished_at
+    order_direction: 'asc' or 'desc'
+    """
+    return await _query_job_logs(filters, limit, offset, order_by, order_direction)
+
+@mcp.tool(name="get_job_summary_stats")
+async def mcp_get_job_summary_stats(
+    filters: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """Get summary statistics for job logs
+    
+    Returns statistics including:
+    - Total jobs, successful, failed, in-progress counts
+    - Success rate percentage
+    - Job type breakdown
+    - Table breakdown
+    - Records affected statistics
+    
+    Accepts same filters as query_job_logs
+    """
+    return await _get_job_summary_stats(filters)
+
 archive_records = _archive_records  
 delete_archived_records = _delete_archived_records
 get_table_stats = _get_table_stats
@@ -847,6 +1238,8 @@ region_status = _region_status
 health_check = _health_check
 execute_confirmed_archive = _execute_confirmed_archive
 execute_confirmed_delete = _execute_confirmed_delete
+query_job_logs = _query_job_logs
+get_job_summary_stats = _get_job_summary_stats
 
 # Schema information for different tables
 activities_schema = {
@@ -910,6 +1303,39 @@ transaction_schema = {
     }
 }
 
+# Schema information for job_logs table
+job_logs_schema = {
+    "table": "job_logs",
+    "columns": [
+        {"name": "id", "type": "bigint", "description": "Unique identifier (auto-increment)"},
+        {"name": "schema_name", "type": "string", "description": "Optional schema name for multi-schema jobs"},
+        {"name": "job_type", "type": "string", "description": "Type of job (DELETE/ARCHIVE/OTHER)"},
+        {"name": "table_name", "type": "string", "description": "Table affected by the job"},
+        {"name": "status", "type": "string", "description": "Job status (IN_PROGRESS/SUCCESS/FAILED)"},
+        {"name": "reason", "type": "text", "description": "Success message or failure reason"},
+        {"name": "records_affected", "type": "int", "description": "Number of rows affected"},
+        {"name": "started_at", "type": "datetime", "description": "When job started"},
+        {"name": "finished_at", "type": "datetime", "description": "When job finished"}
+    ],
+    "sample_filters": {
+        "id": "5",
+        "schema_name": "log_management",
+        "job_type": "ARCHIVE",
+        "table_name": "dsitransactionlogarchive",
+        "status": "SUCCESS",
+        "reason": "Archived 333 records older than 7 days",
+        "records_affected": "333",
+        "started_at": "2025-10-02T21:26:21",
+        "finished_at": "2025-10-02T21:26:21"
+    },
+    "available_filters": {
+        "status": ["IN_PROGRESS", "SUCCESS", "FAILED"],
+        "job_type": ["DELETE", "ARCHIVE", "OTHER"],
+        "date_ranges": ["today", "yesterday", "this_week", "this_month", "last_7_days", "last_30_days"],
+        "boolean_filters": ["failed_only", "successful_only", "in_progress_only", "zero_records_only", "has_records_only"]
+    }
+}
+
 # Add resource definitions for MCP
 @mcp.resource("database://activities")
 async def get_activities_resource() -> str:
@@ -920,6 +1346,11 @@ async def get_activities_resource() -> str:
 async def get_transactions_resource() -> str:
     """Get transactions table schema information"""
     return str(transaction_schema)
+
+@mcp.resource("database://job_logs")
+async def get_job_logs_resource() -> str:
+    """Get job_logs table schema information"""
+    return str(job_logs_schema)
 
 
 def main():

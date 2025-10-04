@@ -354,6 +354,12 @@ class ChatService:
             elif tool_used == "region_status":
                 return self._format_region_status_response(mcp_result, region)
                 
+            elif tool_used == "query_job_logs":
+                return self._format_job_logs_response(mcp_result, region)
+                
+            elif tool_used == "get_job_summary_stats":
+                return self._format_job_summary_response(mcp_result, region)
+                
             else:
                 # Unknown or null tool - this should not happen with our new logic
                 if tool_used is None:
@@ -1208,7 +1214,7 @@ class ChatService:
         
         for table_name, stats in detailed_stats.items():
             table_data = {
-                "name": stats.get("display_name", table_name),
+                "name": table_name,
                 "table_name": table_name,
                 "total_records": stats.get("total_count", 0),
                 "age_based_count": stats.get("older_count", 0),
@@ -1586,6 +1592,121 @@ class ChatService:
                 "connected_count": connected_count,
                 "total_regions": total_regions
             }
+        )
+
+    def _format_job_logs_response(self, mcp_result: dict, region: str) -> ChatResponse:
+        """Format job logs query response"""
+        if not mcp_result.get("success", True):  # Structured responses don't have success field
+            error_msg = mcp_result.get("error_message", "Failed to retrieve job logs")
+            response = f"Job Logs Error\n\n{error_msg}"
+            return ChatResponse(
+                response=response,
+                response_type="error",
+                structured_content=self._create_error_structured_content(error_msg, region)
+            )
+        
+        # For structured responses, pass them directly through
+        if mcp_result.get("type"):
+            # This is already a structured response, pass it through
+            structured_content = mcp_result
+            
+            # Create a text response based on the structured content
+            if mcp_result.get("type") == "job_logs_table":
+                records = mcp_result.get("records", [])
+                total_count = mcp_result.get("total_count", 0)
+                response = f"Job Logs Table\n\nFound {len(records)} job logs"
+                if total_count > len(records):
+                    response += f" (showing {len(records)} of {total_count} total)"
+                response += "\n\nView the detailed table below for complete information."
+                
+            elif mcp_result.get("type") == "conversational_card":
+                content = mcp_result.get('content', 'No content available')
+                title = mcp_result.get('title', 'Job Logs Results')
+                
+                # For reason-only responses, extract just the reason text
+                if title == "Job Status" and content and '\n\nTable:' in content:
+                    # Extract just the reason part (everything before the table info)
+                    reason_part = content.split('\n\nTable:')[0].strip()
+                    if reason_part:
+                        response = reason_part
+                    else:
+                        response = content
+                else:
+                    response = f"{title}\n\n{content}"
+                
+            else:
+                response = "Job Logs Results\n\nView the detailed information below."
+            
+            return ChatResponse(
+                response=response,
+                response_type="job_logs",
+                structured_content=structured_content,
+                context={
+                    "tool": "query_job_logs",
+                    "region": region,
+                    "record_count": len(mcp_result.get("records", [])),
+                    "total_count": mcp_result.get("total_count", 0)
+                }
+            )
+        
+        # Fallback for old-style responses
+        response = "Job Logs Query Results\n\nNo data available."
+        return ChatResponse(
+            response=response,
+            response_type="job_logs",
+            structured_content=None
+        )
+
+    def _format_job_summary_response(self, mcp_result: dict, region: str) -> ChatResponse:
+        """Format job summary statistics response"""
+        if not mcp_result.get("success", True):  # Structured responses don't have success field
+            error_msg = mcp_result.get("error_message", "Failed to retrieve job statistics")
+            response = f"Job Statistics Error\n\n{error_msg}"
+            return ChatResponse(
+                response=response,
+                response_type="error",
+                structured_content=self._create_error_structured_content(error_msg, region)
+            )
+        
+        # For structured responses, pass them directly through
+        if mcp_result.get("type") == "stats_card":
+            # This is already a structured response, pass it through
+            structured_content = mcp_result
+            
+            # Create a text response based on the stats
+            stats = mcp_result.get("stats", [])
+            details = mcp_result.get("details", [])
+            
+            response = f"Job Statistics Summary\n\n"
+            
+            # Add key stats to text response
+            for stat in stats[:4]:  # First 4 stats for text
+                response += f"• {stat.get('label', 'Unknown')}: {stat.get('value', 'N/A')}\n"
+            
+            if details:
+                response += f"\nAdditional Details:\n"
+                for detail in details[:3]:  # First 3 details
+                    response += f"• {detail}\n"
+            
+            response += f"\nView the statistics card below for complete visual breakdown."
+            
+            return ChatResponse(
+                response=response,
+                response_type="job_statistics",
+                structured_content=structured_content,
+                context={
+                    "tool": "get_job_summary_stats",
+                    "region": region,
+                    "stats_count": len(stats)
+                }
+            )
+        
+        # Fallback for old-style responses
+        response = "Job Statistics\n\nNo statistics available."
+        return ChatResponse(
+            response=response,
+            response_type="job_statistics",
+            structured_content=None
         )
 
     def _create_welcome_response(self, user_id: str, user_role: str, region: str) -> ChatResponse:

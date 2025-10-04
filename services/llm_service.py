@@ -196,6 +196,22 @@ class OpenAIService:
             3. delete_archived_records - Use for deleting records from archive tables
             4. health_check - Use for system health/status checks
             5. region_status - Use for region connection status and current region information
+            6. query_job_logs - Use for JOB LOGS queries (shows job execution history, status, records affected)
+            7. get_job_summary_stats - Use for JOB STATISTICS queries (shows job performance metrics, success rates)
+
+            JOB LOGS FILTERING RULES - CRITICAL:
+            - SINGULAR vs PLURAL: "job" (singular) should use "limit": 1, "jobs" (plural) should use default limit
+            - "show jobs" (general): Always add "limit": 5 and "format": "table" to get recent 5 jobs in table format
+            - LAST/LATEST/MOST RECENT: Always add "limit": 1 and "format": "table" to get only the most recent record in table format
+            - STATUS FILTERS: "successful" → "SUCCESS", "failed" → "FAILED", "running" → "IN_PROGRESS"
+            - DATE FILTERS: "today" → "date_range": "today", "yesterday" → "date_range": "yesterday"
+            - MULTIPLE FILTERS: Combine filters as needed, e.g., {{"status": "SUCCESS", "limit": 1, "date_range": "today"}}
+            - Examples:
+              * "last job" → {{"limit": 1, "format": "table"}}
+              * "last successful job" → {{"status": "SUCCESS", "limit": 1, "format": "table"}}
+              * "reason of last failed job" → {{"status": "FAILED", "limit": 1, "format": "reason_only"}}
+              * "failed jobs today" → {{"status": "FAILED", "date_range": "today"}}
+              * "latest archive job" → {{"job_type": "ARCHIVE", "limit": 1, "format": "table"}}
 
             CONTEXT HANDLING - CRITICAL:
             - ALWAYS examine conversation history to understand incomplete requests
@@ -253,7 +269,10 @@ class OpenAIService:
             - Destructive requests (delete database, drop table, etc.) should return None, not clarification requests
 
             Key Analysis Rules:
-            - DATA QUERIES: COUNT/HOW MANY/STATISTICS about records → ALWAYS use get_table_stats
+            - JOB QUERIES (HIGHEST PRIORITY): Any mention of "job", "jobs", "job logs", "job statistics", "job summary" → ALWAYS use job-specific tools
+              * Job counts/statistics: "count of jobs", "how many jobs", "job statistics" → Use get_job_summary_stats
+              * Job logs/details: "show jobs", "job logs", "recent jobs" → Use query_job_logs  
+            - DATA QUERIES: COUNT/HOW MANY/STATISTICS about records (NOT jobs) → ALWAYS use get_table_stats
             - DATA OPERATIONS: "show activities", "list transactions", "display archive records" → ALWAYS use get_table_stats (show counts, not records)
             - CRITICAL: "archived transactions" or "archived activities" = QUERY operations (show stats), NOT delete operations
             - DELETE operations require explicit confirmation or follow-up commands like "delete them"
@@ -330,6 +349,150 @@ class OpenAIService:
             "show table statistics" or "database statistics"
             → Analysis: GENERAL STATISTICS query + no specific table needed
             → MCP_TOOL: get_table_stats  {{}}
+
+            "show jobs" or "recent jobs"
+            → Analysis: JOB LOGS query + shows recent job execution details + limit to 5 most recent
+            → MCP_TOOL: query_job_logs {{"limit": 5, "format": "table"}}
+
+            "show job logs" or "recent job logs" or "job execution history"
+            → Analysis: JOB LOGS query + shows job execution details
+            → MCP_TOOL: query_job_logs {{"limit": 10}}
+
+            "show me failed jobs" or "failed job logs"
+            → Analysis: JOB LOGS query + status filter for failed jobs
+            → MCP_TOOL: query_job_logs {{"status": "FAILED"}}
+
+            "show me successful jobs" or "successful job logs"
+            → Analysis: JOB LOGS query + status filter for successful jobs
+            → MCP_TOOL: query_job_logs {{"status": "SUCCESS"}}
+
+            "last successful job" or "latest successful job" or "most recent successful job"
+            → Analysis: JOB LOGS query + status filter + limit to 1 record (singular "job")
+            → MCP_TOOL: query_job_logs {{"status": "SUCCESS", "limit": 1, "format": "table"}}
+
+            "last job" or "latest job" or "most recent job"
+            → Analysis: JOB LOGS query + limit to 1 record (singular "job", most recent)
+            → MCP_TOOL: query_job_logs {{"limit": 1, "format": "table"}}
+
+            "show last failed job" or "latest failed job"
+            → Analysis: JOB LOGS query + status filter + limit to 1 record
+            → MCP_TOOL: query_job_logs {{"status": "FAILED", "limit": 1, "format": "table"}}
+
+            "reason of last failed job" or "reason for last failed job" or "why did last job fail" or "last failed job reason" or "what caused last job to fail" or "failure reason for last job" or "error message from last failed job"
+            → Analysis: JOB LOGS query + status filter + limit to 1 record + reason only format
+            → MCP_TOOL: query_job_logs {{"status": "FAILED", "limit": 1, "format": "reason_only"}}
+
+            "job statistics" or "job summary" or "job performance"
+            → Analysis: JOB STATISTICS query + shows success rates and metrics
+            → MCP_TOOL: get_job_summary_stats {{}}
+
+            "count of successful jobs" or "how many successful jobs" or "number of successful jobs" or "successful job count" or "successful jobs count"
+            → Analysis: JOB STATISTICS query + shows only successful job count
+            → MCP_TOOL: get_job_summary_stats {{"format": "count_only", "count_type": "successful"}}
+
+            "count of failed jobs" or "how many failed jobs" or "number of failed jobs" or "failed job count" or "failed jobs count"
+            → Analysis: JOB STATISTICS query + shows only failed job count
+            → MCP_TOOL: get_job_summary_stats {{"format": "count_only", "count_type": "failed"}}
+
+            "count of jobs" or "how many jobs" or "number of jobs" or "total job count" or "job count" or "jobs count"
+            → Analysis: JOB STATISTICS query + shows only total job count
+            → MCP_TOOL: get_job_summary_stats {{"format": "count_only", "count_type": "total"}}
+
+            "count of successful jobs in last month" or "count of successful jobs from last month" or "successful jobs in last month"
+            → Analysis: JOB STATISTICS query with date filter + shows only successful job count for previous calendar month
+            → MCP_TOOL: get_job_summary_stats {{"format": "count_only", "count_type": "successful", "date_range": "last_month"}}
+
+            "count of failed jobs in last month" or "count of failed jobs from last month" or "failed jobs in last month"
+            → Analysis: JOB STATISTICS query with date filter + shows only failed job count for previous calendar month  
+            → MCP_TOOL: get_job_summary_stats {{"format": "count_only", "count_type": "failed", "date_range": "last_month"}}
+
+            "count of jobs in last month" or "count of jobs from last month" or "jobs in last month"
+            → Analysis: JOB STATISTICS query with date filter + shows only total job count for previous calendar month
+            → MCP_TOOL: get_job_summary_stats {{"format": "count_only", "count_type": "total", "date_range": "last_month"}}
+
+            "count of jobs today" or "jobs today" or "job count today"
+            → Analysis: JOB STATISTICS query with date filter + shows job counts for today
+            → MCP_TOOL: get_job_summary_stats {{"date_range": "today"}}
+
+            "count of jobs this week" or "jobs this week" or "job count this week"
+            → Analysis: JOB STATISTICS query with date filter + shows job counts for this week
+            → MCP_TOOL: get_job_summary_stats {{"date_range": "this_week"}}
+
+            "count of jobs from September 15 to September 30" or "jobs from 9/15 to 9/30" or "job count from 9/15/2025 to 9/30/2025"
+            → Analysis: JOB STATISTICS query with custom date range + convert to from_9/15/2025_to_9/30/2025 format
+            → MCP_TOOL: get_job_summary_stats {{"date_range": "from_9/15/2025_to_9/30/2025"}}
+
+            "count of failed jobs from September 15 to September 30" or "failed jobs from 9/15 to 9/30"
+            → Analysis: JOB STATISTICS query with custom date range for failed jobs
+            → MCP_TOOL: get_job_summary_stats {{"date_range": "from_9/15/2025_to_9/30/2025"}}
+
+            "count of successful jobs from October 1 to October 3" or "successful jobs from 10/1 to 10/3"
+            → Analysis: JOB STATISTICS query with custom date range for successful jobs
+            → MCP_TOOL: get_job_summary_stats {{"date_range": "from_10/1/2025_to_10/3/2025"}}
+
+            "jobs from today" or "today's jobs"
+            → Analysis: JOB LOGS query + date filter for today
+            → MCP_TOOL: query_job_logs {{"date_range": "today"}}
+
+            "archive jobs from last week"
+            → Analysis: JOB LOGS query + job type filter + date filter
+            → MCP_TOOL: query_job_logs {{"job_type": "ARCHIVE", "date_range": "last_7_days"}}
+
+            "jobs with 0 records affected" or "jobs with zero records affected" or "jobs that affected 0 records"
+            → Analysis: JOB LOGS query + filter for jobs with no records affected
+            → MCP_TOOL: query_job_logs {{"zero_records_only": true}}
+
+            "jobs with no records affected" or "jobs that didn't affect any records"
+            → Analysis: JOB LOGS query + filter for jobs with no records affected
+            → MCP_TOOL: query_job_logs {{"zero_records_only": true}}
+
+            "jobs that affected records" or "jobs with records affected" or "jobs that changed data"
+            → Analysis: JOB LOGS query + filter for jobs with records affected
+            → MCP_TOOL: query_job_logs {{"has_records_only": true}}
+
+            "jobs that affected more than 100 records" or "jobs with over 100 records"
+            → Analysis: JOB LOGS query + minimum records filter
+            → MCP_TOOL: query_job_logs {{"min_records_affected": 100}}
+
+            "jobs that affected less than 10 records" or "jobs with under 10 records"
+            → Analysis: JOB LOGS query + maximum records filter
+            → MCP_TOOL: query_job_logs {{"max_records_affected": 9}}
+
+            "delete jobs" or "deletion jobs" or "jobs that deleted data"
+            → Analysis: JOB LOGS query + job type filter for delete operations
+            → MCP_TOOL: query_job_logs {{"job_type": "DELETE"}}
+
+            "archive jobs" or "archiving jobs" or "jobs that archived data"
+            → Analysis: JOB LOGS query + job type filter for archive operations
+            → MCP_TOOL: query_job_logs {{"job_type": "ARCHIVE"}}
+
+            "failed archive jobs" or "failed archiving jobs"
+            → Analysis: JOB LOGS query + job type filter + status filter
+            → MCP_TOOL: query_job_logs {{"job_type": "ARCHIVE", "status": "FAILED"}}
+
+            "successful delete jobs" or "successful deletion jobs"
+            → Analysis: JOB LOGS query + job type filter + status filter
+            → MCP_TOOL: query_job_logs {{"job_type": "DELETE", "status": "SUCCESS"}}
+
+            "jobs on dsiactivities table" or "jobs for activities table"
+            → Analysis: JOB LOGS query + table name filter
+            → MCP_TOOL: query_job_logs {{"table_name": "dsiactivities"}}
+
+            "jobs on archive tables" or "jobs for archived data"
+            → Analysis: JOB LOGS query + table name filter for archive tables
+            → MCP_TOOL: query_job_logs {{"table_name": ["dsiactivitiesarchive", "dsitransactionlogarchive"]}}
+
+            "jobs containing error" or "jobs with error message" or "jobs that mention timeout"
+            → Analysis: JOB LOGS query + text search in reason field
+            → MCP_TOOL: query_job_logs {{"reason_contains": "error"}}
+
+            "yesterday's failed jobs" or "failed jobs from yesterday"
+            → Analysis: JOB LOGS query + date range + status filter
+            → MCP_TOOL: query_job_logs {{"date_range": "yesterday", "status": "FAILED"}}
+
+            "running jobs" or "jobs in progress" or "currently running jobs"
+            → Analysis: JOB LOGS query + status filter for in-progress
+            → MCP_TOOL: query_job_logs {{"status": "IN_PROGRESS"}}
 
             "which region is connected" or "current region" or "region status"
             → Analysis: REGION STATUS query + region information needed
@@ -559,26 +722,25 @@ class OpenAIService:
                 return None
             
             # Parse the MCP_TOOL line: "MCP_TOOL: [tool_name] [table_name] [filters_json]"
-            parts = mcp_line.replace("MCP_TOOL:", "").strip().split(" ", 2)
-            tool_name = parts[0].strip() if len(parts) > 0 else ""
-            table_name = parts[1].strip() if len(parts) > 1 else ""
-            filters_str = parts[2].strip() if len(parts) > 2 else "{}"
+            # Handle tools that don't need table names specially to avoid JSON parsing issues
+            tools_without_tables = ["health_check", "region_status", "query_job_logs", "get_job_summary_stats"]
             
-            # Handle tools that don't need table names
-            tools_without_tables = ["health_check", "region_status"]
+            cleaned_line = mcp_line.replace("MCP_TOOL:", "").strip()
+            parts = cleaned_line.split(" ", 1)
+            tool_name = parts[0].strip() if len(parts) > 0 else ""
+            
             if tool_name in tools_without_tables:
-                # For these tools, the second part might be filters, not table name
-                if table_name.startswith("{") and table_name.endswith("}"):
-                    # The table_name is actually filters
-                    filters_str = table_name
-                    table_name = ""
-                elif table_name == "{}":
-                    # Empty filters represented as {}
-                    table_name = ""
-                    filters_str = "{}"
+                # For tools without tables, everything after tool name is filters
+                table_name = ""
+                filters_str = parts[1].strip() if len(parts) > 1 else "{}"
+            else:
+                # For tools with tables, split normally
+                all_parts = cleaned_line.split(" ", 2)
+                table_name = all_parts[1].strip() if len(all_parts) > 1 else ""
+                filters_str = all_parts[2].strip() if len(all_parts) > 2 else "{}"
             
             # Validate tool name is not empty and is valid
-            valid_tools = ["get_table_stats", "archive_records", "delete_archived_records", "health_check", "region_status"]
+            valid_tools = ["get_table_stats", "archive_records", "delete_archived_records", "health_check", "region_status", "query_job_logs", "get_job_summary_stats"]
             if not tool_name:
                 logger.error(f"Empty tool name in MCP_TOOL line: '{mcp_line}'. Original message: '{original_message}'")
                 return None
@@ -697,6 +859,12 @@ class OpenAIService:
                 mcp_result = await health_check()
             elif tool_name == "region_status":
                 mcp_result = await region_status()
+            elif tool_name == "query_job_logs":
+                from cloud_mcp.server import _query_job_logs
+                mcp_result = await _query_job_logs(filters)
+            elif tool_name == "get_job_summary_stats":
+                from cloud_mcp.server import _get_job_summary_stats
+                mcp_result = await _get_job_summary_stats(filters)
             else:
                 logger.warning(f"Unknown MCP tool or missing table: tool={tool_name}, table={table_name}")
             

@@ -21,7 +21,7 @@ try:
     inspector = inspect(engine)
     existing_tables = inspector.get_table_names()
     
-    required_tables = ['dsiactivities', 'dsiactivitiesarchive', 'dsitransactionlog', 'dsitransactionlogarchive', 'region_config']
+    required_tables = ['dsiactivities', 'dsiactivitiesarchive', 'dsitransactionlog', 'dsitransactionlogarchive', 'region_config', 'job_logs']
     missing_tables = [t for t in required_tables if t not in existing_tables]
     
     if missing_tables:
