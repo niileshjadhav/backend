@@ -351,15 +351,12 @@ class OpenAIService:
                 # Try to extract operation intent and provide fallback response for common cases
                 if self._is_job_logs_request(user_message):
                     # Create fallback job logs operation 
-                    logger.info(f"Providing fallback job logs operation for: '{user_message}'")
                     return await self._create_fallback_job_logs_operation(user_message, conversation_context)
                 elif self._is_archive_request(user_message):
                     # Create fallback archive operation with context
-                    logger.info(f"Providing fallback archive operation for: '{user_message}'")
                     return await self._create_fallback_archive_operation(user_message, conversation_context)
                 elif self._is_stats_request(user_message):
                     # Create fallback stats operation with context
-                    logger.info(f"Providing fallback stats operation for: '{user_message}'")
                     return await self._create_fallback_stats_operation(user_message, conversation_context)
                 
                 return None
@@ -369,16 +366,11 @@ class OpenAIService:
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
             
-            # Try fallback logic when API calls fail
-            logger.info(f"Attempting fallback operations due to LLM API failure")
             if self._is_job_logs_request(user_message):
-                logger.info(f"Providing fallback job logs operation for: '{user_message}'")
                 return await self._create_fallback_job_logs_operation(user_message, conversation_context)
             elif self._is_archive_request(user_message):
-                logger.info(f"Providing fallback archive operation for: '{user_message}'")
                 return await self._create_fallback_archive_operation(user_message, conversation_context)
             elif self._is_stats_request(user_message):
-                logger.info(f"Providing fallback stats operation for: '{user_message}'")
                 return await self._create_fallback_stats_operation(user_message, conversation_context)
             
             return None
@@ -389,10 +381,7 @@ class OpenAIService:
             # Clean up the response and find the MCP_TOOL line
             cleaned_response = llm_response.strip()
             mcp_line = None
-            
-            # Debug: log the full LLM response
-            logger.info(f"Full LLM response for parsing: '{llm_response}' (original message: '{original_message}')")
-            
+                        
             # Handle case where the entire response is the MCP_TOOL line
             if cleaned_response.startswith("MCP_TOOL:"):
                 mcp_line = cleaned_response
@@ -402,9 +391,7 @@ class OpenAIService:
                     if "MCP_TOOL:" in line:
                         mcp_line = line.strip()
                         break
-            
-            logger.info(f"Extracted MCP line: '{mcp_line}'")
-            
+                        
             if not mcp_line:
                 logger.error(f"No MCP_TOOL line found in LLM response. Full response: '{llm_response}'. Original message: '{original_message}'")
                 return None
@@ -468,10 +455,8 @@ class OpenAIService:
                 # This is valid - general database stats
                 pass
             elif table_name and table_name not in valid_tables:
-                logger.warning(f"Invalid table name '{table_name}' provided by LLM. Valid tables: {valid_tables}")
                 # For get_table_stats with invalid table name, try to use general database stats instead
                 if tool_name == "get_table_stats":
-                    logger.info(f"Invalid table name '{table_name}' for get_table_stats, using general database stats instead")
                     table_name = ""  # Use empty table name for general stats
                 else:
                     # Create error result for invalid table name
