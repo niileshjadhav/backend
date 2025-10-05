@@ -35,11 +35,14 @@ class OpenAIService:
             raise
     
     def _extract_context_info(self, conversation_context: Optional[str] = None) -> Dict[str, Any]:
-        """Extract table name and filters from conversation context"""
+        """Extract table name, filters, and job log context from conversation context"""
         context_info = {
             "last_table": None,
             "last_filters": {},
-            "last_operation": None
+            "last_operation": None,
+            "last_job_operation": None,
+            "last_job_filters": {},
+            "has_job_context": False
         }
         
         if not conversation_context:
@@ -76,6 +79,47 @@ class OpenAIService:
                 context_info["last_operation"] = "stats"
             elif "delete" in context_lower:
                 context_info["last_operation"] = "delete"
+            
+            # Extract job log context
+            if "[job context:" in context_lower or "job logs" in context_lower or "job query" in context_lower:
+                context_info["has_job_context"] = True
+                context_info["last_job_operation"] = "job_logs"
+                
+                # Extract job-specific filters from context
+                import re
+                
+                # Extract job types
+                job_type_match = re.search(r"job_type: ([^,\]]+)", context_lower)
+                if job_type_match:
+                    context_info["last_job_filters"]["job_type"] = job_type_match.group(1).strip()
+                
+                # Extract status filters (more specific patterns)
+                status_match = re.search(r"status: ([^,\]]+)", context_lower)
+                if status_match:
+                    status_value = status_match.group(1).strip()
+                    context_info["last_job_filters"]["status"] = status_value
+                    if status_value.upper() == "FAILED":
+                        context_info["last_job_filters"]["failed_only"] = True
+                    elif status_value.upper() == "SUCCESS":
+                        context_info["last_job_filters"]["successful_only"] = True
+                
+                # Extract table filters
+                tables_match = re.search(r"tables: ([^,\]]+)", context_lower)
+                if tables_match:
+                    context_info["last_job_filters"]["table_name"] = tables_match.group(1).strip()
+                
+                # Extract date range filters
+                date_match = re.search(r"date_range: ([^,\]]+)", context_lower)
+                if date_match:
+                    context_info["last_job_filters"]["date_range"] = date_match.group(1).strip()
+                
+                # Handle direct job_types/job_type patterns
+                job_types_match = re.search(r"job_types: ([^,\]]+)", context_lower)
+                if job_types_match:
+                    context_info["last_job_filters"]["job_type"] = job_types_match.group(1).strip()
+                
+                # Don't assume failed status unless explicitly mentioned
+                # Remove the automatic failed/successful detection that was causing issues
                             
         except Exception as e:
             logger.warning(f"Error extracting context info: {e}")
@@ -109,7 +153,7 @@ class OpenAIService:
         # These are NEW queries that explicitly mention table type, use main tables
         
         if "transaction" in user_msg_lower:
-            # "transactions older than X" or "show transactions" → use main table
+            # "transactions older than X" or "show transactions" or "yesterday's transactions" → use main table
             if "archive" in user_msg_lower:
                 return "dsitransactionlogarchive"
             return "dsitransactionlog"
@@ -118,6 +162,13 @@ class OpenAIService:
             if "archive" in user_msg_lower:
                 return "dsiactivitiesarchive"
             return "dsiactivities"
+        
+        # Handle specific yesterday patterns
+        if "yesterday" in user_msg_lower:
+            if "transaction" in user_msg_lower:
+                return "dsitransactionlog"
+            elif "activit" in user_msg_lower:
+                return "dsiactivities"
         
 
         
@@ -139,6 +190,10 @@ class OpenAIService:
             (r"older than (\d+) years?", lambda m: {"date_filter": f"older_than_{m.group(1)}_years"}),
             (r"from last year", lambda m: {"date_filter": "from_last_year"}),
             (r"from last month", lambda m: {"date_filter": "from_last_month"}),
+            (r"yesterday('s)?\s+(transactions|activities)", lambda m: {"date_filter": "yesterday"}),
+            (r"(transactions|activities)\s+from\s+yesterday", lambda m: {"date_filter": "yesterday"}),
+            (r"(from\s+the\s+)?past\s+(\d+)\s+days", lambda m: {"date_filter": f"from_last_{m.group(2)}_days"}),
+            (r"(from\s+)?last\s+(\d+)\s+days", lambda m: {"date_filter": f"from_last_{m.group(2)}_days"}),
             (r"recent|latest", lambda m: {"date_filter": "recent"})
         ]
         
@@ -148,12 +203,9 @@ class OpenAIService:
                 filters.update(filter_func(match))
                 break
         
-        # If no explicit filters in message, check if we should inherit from context
-        if not filters and context_info.get("last_filters"):
-            # Inherit filters for follow-up operations like "archive them", "count", etc.
-            follow_up_keywords = ["them", "those", "it", "archive", "delete", "count"]
-            if any(keyword in user_msg_lower for keyword in follow_up_keywords):
-                filters = context_info["last_filters"].copy()
+        # If no explicit filters in message, intelligently determine if this is a follow-up based on context
+        if not filters:
+            pass
         
         return filters
 
@@ -174,12 +226,15 @@ class OpenAIService:
             Previous Table: {context_info.get('last_table', 'None')}
             Previous Filters: {context_info.get('last_filters', {})}
             Previous Operation: {context_info.get('last_operation', 'None')}
+            Previous Job Operation: {context_info.get('last_job_operation', 'None')}
+            Previous Job Filters: {context_info.get('last_job_filters', {})}
+            Has Job Context: {context_info.get('has_job_context', False)}
 
             This helps understand references like "show me more", "archive those records", "delete them", etc.
             """
             
             enhanced_prompt = f"""
-            You are an expert database operations assistant. Analyze the user's request and convert it to the appropriate MCP tool call.
+            You are an expert database operations assistant. Analyze user requests using natural language understanding and conversational context.
 
             User Request: "{user_message}"
             {context_section}
@@ -191,468 +246,79 @@ class OpenAIService:
             - dsitransactionlogarchive: Archived transaction logs (old records)
 
             Available MCP Tools:
-            1. get_table_stats - Use for ACTIVITIES/TRANSACTIONS/ARCHIVE queries (shows counts, not records)
-            2. archive_records - Use for archiving old records to archive tables
-            3. delete_archived_records - Use for deleting records from archive tables
-            4. health_check - Use for system health/status checks
-            5. region_status - Use for region connection status and current region information
-            6. query_job_logs - Use for JOB LOGS queries (shows job execution history, status, records affected)
-            7. get_job_summary_stats - Use for JOB STATISTICS queries (shows job performance metrics, success rates)
-
-            JOB LOGS FILTERING RULES - CRITICAL:
-            - SINGULAR vs PLURAL: "job" (singular) should use "limit": 1, "jobs" (plural) should use default limit
-            - "show jobs" (general): Always add "limit": 5 and "format": "table" to get recent 5 jobs in table format
-            - LAST/LATEST/MOST RECENT: Always add "limit": 1 and "format": "table" to get only the most recent record in table format
-            - STATUS FILTERS: "successful" → "SUCCESS", "failed" → "FAILED", "running" → "IN_PROGRESS"
-            - DATE FILTERS: "today" → "date_range": "today", "yesterday" → "date_range": "yesterday"
-            - MULTIPLE FILTERS: Combine filters as needed, e.g., {{"status": "SUCCESS", "limit": 1, "date_range": "today"}}
-            - Examples:
-              * "last job" → {{"limit": 1, "format": "table"}}
-              * "last successful job" → {{"status": "SUCCESS", "limit": 1, "format": "table"}}
-              * "reason of last failed job" → {{"status": "FAILED", "limit": 1, "format": "reason_only"}}
-              * "failed jobs today" → {{"status": "FAILED", "date_range": "today"}}
-              * "latest archive job" → {{"job_type": "ARCHIVE", "limit": 1, "format": "table"}}
-
-            CONTEXT HANDLING - CRITICAL:
-            - ALWAYS examine conversation history to understand incomplete requests
-            - If user says "for then X days", "what about Y months", "for activities", etc. - use context to determine table and operation
-            - If user says "archive them", "delete them", "archive those records" - use context to determine BOTH table AND filters from previous query
-            - PRESERVE BOTH TABLE AND FILTERS: Extract exact table name and date filters from previous query
-            - Look for previous queries to understand what table/operation user is referring to
-            - Context patterns: "for then", "what about", "how about", "and for", "also for", "archive them", "delete them", "those records", "count", "count them", "show count"
-            - Example: Previous "activities older than 30 days" → "archive them" = MUST use both "dsiactivities" table AND "older_than_30_days" filter
-            - Example: Previous "archived transactions older than 10 days" → "count" = MUST use "dsitransactionlogarchive" table (preserve archive context)
-            - Example: Previous "archived transactions older than 10 days" → "delete them" = MUST use "dsitransactionlogarchive" table (preserve archive context)
-            - Example: Previous "archived activities older than 30 days" → "delete them" = MUST use "dsiactivitiesarchive" table (preserve archive context)
-            - Example: Previous "archived transactions" → "delete those records" = MUST use "dsitransactionlogarchive" table (preserve archive context)
-            - Example: Previous "archived activities older than 30 days" → "show transactions" = MUST use "dsitransactionlog" table (NEW explicit table request)
-            
-            TABLE CONTINUITY RULES - CRITICAL:
-            - If previous operation was on "dsitransactionlog" → any follow-up "count", "show", "list" should ALSO use "dsitransactionlog"
-            - If previous operation was on "dsiactivities" → any follow-up "count", "show", "list" should ALSO use "dsiactivities"
-            - Look for "[Context: Previous operation on table: TABLE_NAME]" markers in conversation history
-            - When user says just "count" without specifying table, use the MOST RECENT table from conversation history
-            - DO NOT default to "dsiactivities" if recent context shows operations on "dsitransactionlog" or archive tables
-            - SMART CONTEXT DECISION: Use your intelligence to determine if the query references previous results or is a new request:
-              * References to previous: "archive them", "delete those", "count", "older than X", "yes archive", "remove all that data" → PRESERVE previous table context
-              * New explicit requests: "show activities", "transactions older than X", "archive activities" → Use specified table type
-              * CRITICAL: After "archived transactions" query, "delete them" MUST use dsitransactionlogarchive (preserve archive context)
-              * CRITICAL: After "archived activities" query, "delete them" MUST use dsiactivitiesarchive (preserve archive context)
-              * Use natural language understanding rather than rigid keyword matching
-            
-            CONFIRMATION HANDLING:
-            If this is a confirmation (contains "CONFIRM ARCHIVE" or "CONFIRM DELETE"):
-            - Look at the conversation history to find the original preview operation
-            - Extract the EXACT same table name and filters that were used
-            - Add "confirmed":true to the filters
-            - Use archive_records for "CONFIRM ARCHIVE" or delete_archived_records for "CONFIRM DELETE"
-
-            SAFETY RULES - CRITICAL:
-            - Archive operations without date filters → System applies default 7-day minimum age filter
-            - Delete operations without date filters → System applies default 30-day minimum age filter
-            - These defaults prevent accidental processing of ALL records
-
-            ERROR HANDLING & CLARIFICATION - CRITICAL:
-            - If user request is a simple greeting (hello, hi, help) → Return None (let conversational system handle)
-            - If user asks POLICY/EXPLANATION questions (what does archive mean, how does archiving work, what is archive policy) → Return None (let conversational system handle)
-            - If user asks GENERAL INFORMATIONAL questions (what is today's date, what time is it, current date, today's date) → Return None (let conversational system handle)
-            - If user asks OFF-TOPIC questions (weather, sports, cooking, news, entertainment, etc.) → Return None (let conversational system handle)
-            - If user asks DESTRUCTIVE/DANGEROUS questions (delete database, drop table, truncate, delete all, etc.) → Return None (let conversational system handle)
-            - If table name cannot be determined from user request AND it's database-related → MUST respond with: "CLARIFY_TABLE_NEEDED"
-            - If filters or date criteria are ambiguous AND it's database-related → MUST respond with: "CLARIFY_FILTERS_NEEDED"  
-            - If user request is unclear or incomplete AND it's database-related → MUST respond with: "CLARIFY_REQUEST_NEEDED"
-            - If user says vague things like "show data", "archive stuff", "delete things" → MUST ask for clarification
-            - DO NOT guess table names - if unclear, ask for clarification
-            - DO NOT proceed with MCP_TOOL format unless table names and operations are 100% clear
-            - Simple conversational messages should return None, not clarification requests
-            - Off-topic requests (not related to database/logs/activities/transactions/archiving) should return None, not clarification requests
-            - Destructive requests (delete database, drop table, etc.) should return None, not clarification requests
-
-            Key Analysis Rules:
-            - JOB QUERIES (HIGHEST PRIORITY): Any mention of "job", "jobs", "job logs", "job statistics", "job summary" → ALWAYS use job-specific tools
-              * Job counts/statistics: "count of jobs", "how many jobs", "job statistics" → Use get_job_summary_stats
-              * Job logs/details: "show jobs", "job logs", "recent jobs" → Use query_job_logs  
-            - DATA QUERIES: COUNT/HOW MANY/STATISTICS about records (NOT jobs) → ALWAYS use get_table_stats
-            - DATA OPERATIONS: "show activities", "list transactions", "display archive records" → ALWAYS use get_table_stats (show counts, not records)
-            - CRITICAL: "archived transactions" or "archived activities" = QUERY operations (show stats), NOT delete operations
-            - DELETE operations require explicit confirmation or follow-up commands like "delete them"
-            - MAIN vs ARCHIVE TABLE SELECTION:
-              * "count transactions", "show transactions", "list transactions" → Use MAIN table (dsitransactionlog)
-              * "count archived transactions", "show archived transactions" → Use ARCHIVE table (dsitransactionlogarchive)
-              * Only use archive tables when "archive" or "archived" is explicitly mentioned
-            - GENERAL DATABASE STATS (e.g., "show table statistics", "database statistics") → use get_table_stats with NO table name (leave empty)
-            - REGION QUERIES: "which region", "current region", "region status", "connected regions", "what region" → ALWAYS use region_status
-            - POLICY/EXPLANATION QUESTIONS: "what is archive policy", "how does archiving work", "what does archive mean" → Return None (conversational)
-            - INTELLIGENT Table Selection: 
-              * Use your language understanding to distinguish between NEW requests vs REFERENCES to previous results
-              * NEW requests: User mentions specific table type → Use that table (main tables unless explicitly archived)
-              * CRITICAL: "count transactions", "show activities" = NEW requests → Use MAIN tables (ignore previous archive context)
-              * REFERENCES: User refers to previous results in any natural way → Preserve exact previous table context
-              * Trust your understanding of natural language intent over rigid pattern matching
-            - NATURAL LANGUAGE CONTEXT UNDERSTANDING: Use your intelligence to understand when users are:
-              1. Referring to previous results (any natural expression like "archive those", "delete the old stuff", "delete them", "remove all that", etc.)
-              2. Making new requests (explicit table mentions or completely new topics)
-              3. NEVER ask for clarification when context is clear from conversation history
-              4. If previous query was about "archived X", then "delete them" clearly refers to deleting those archived records
-              5. Don't rely on hardcoded patterns - understand the conversational flow and user intent
-            - CONTEXT PRESERVATION: If previous query was about archive tables, follow-up date queries (older than X, from Y) should STAY on archive tables!
-            - Date filters: Parse natural language dates
-               - "older than 10 months" → {{"date_filter": "older_than_10_months"}}
-               - "older than 12 months" → {{"date_filter": "older_than_12_months"}}
-               - "from last year" → {{"date_filter": "from_last_year"}}
-               - "recent" or "latest" → {{"date_filter": "recent"}}
-               - "for then X days" → {{"date_filter": "older_than_X_days"}} (use context to determine table)
-
-            Examples with detailed analysis:
-
-            CLEAR REQUESTS (proceed with MCP_TOOL):
-            "count of activities older than 12 months"
-            → Analysis: COUNT query + date filter + specific table clearly identified + NO archive context
-            → MCP_TOOL: get_table_stats dsiactivities {{"date_filter": "older_than_12_months"}}
-
-            "show activities from last month" 
-            → Analysis: SHOW query + activities table clearly identified + NO archive context
-            → MCP_TOOL: get_table_stats dsiactivities {{"date_filter": "from_last_month"}}
-
-            "count of archived activities older than 6 months"
-            → Analysis: COUNT query + ARCHIVE explicitly mentioned + date filter
-            → MCP_TOOL: get_table_stats dsiactivitiesarchive {{"date_filter": "older_than_6_months"}}
-
-            "count transactions"
-            → Analysis: NEW explicit request - count main transaction table (NOT archive)  
-            → MCP_TOOL: get_table_stats dsitransactionlog {{}}
-            
-            "archived transactions"
-            → Analysis: QUERY operation - user wants to see archived transaction stats/count (NOT delete)
-            → MCP_TOOL: get_table_stats dsitransactionlogarchive {{}}
-            
-            "count of archived transactions older than 3 months"
-            → Analysis: QUERY operation + ARCHIVE explicitly mentioned + date filter
-            → MCP_TOOL: get_table_stats dsitransactionlogarchive {{"date_filter": "older_than_3_months"}}
-
-            "count transactions"
-            → Analysis: COUNT query + transactions table + NO archive mentioned → Use MAIN table
-            → MCP_TOOL: get_table_stats dsitransactionlog {{}}
-            
-            "list transactions"
-            → Analysis: LIST query + transactions table clearly identified + NO archive context
-            → MCP_TOOL: get_table_stats dsitransactionlog {{}}
-
-            "archive activities older than 12 months"
-            → Analysis: ARCHIVE operation + date filter + activities table clearly identified
-            → MCP_TOOL: archive_records dsiactivities {{"date_filter": "older_than_12_months"}}
-
-            "which region is connected now" or "current region status" or "what region"
-            → Analysis: REGION STATUS query + region connection information needed
-            → MCP_TOOL: region_status  {{}}
-
-            "show table statistics" or "database statistics"
-            → Analysis: GENERAL STATISTICS query + no specific table needed
-            → MCP_TOOL: get_table_stats  {{}}
-
-            "show jobs" or "recent jobs"
-            → Analysis: JOB LOGS query + shows recent job execution details + limit to 5 most recent
-            → MCP_TOOL: query_job_logs {{"limit": 5, "format": "table"}}
-
-            "show job logs" or "recent job logs" or "job execution history"
-            → Analysis: JOB LOGS query + shows job execution details
-            → MCP_TOOL: query_job_logs {{"limit": 10}}
-
-            "show me failed jobs" or "failed job logs"
-            → Analysis: JOB LOGS query + status filter for failed jobs
-            → MCP_TOOL: query_job_logs {{"status": "FAILED"}}
-
-            "show me successful jobs" or "successful job logs"
-            → Analysis: JOB LOGS query + status filter for successful jobs
-            → MCP_TOOL: query_job_logs {{"status": "SUCCESS"}}
-
-            "last successful job" or "latest successful job" or "most recent successful job"
-            → Analysis: JOB LOGS query + status filter + limit to 1 record (singular "job")
-            → MCP_TOOL: query_job_logs {{"status": "SUCCESS", "limit": 1, "format": "table"}}
-
-            "last job" or "latest job" or "most recent job"
-            → Analysis: JOB LOGS query + limit to 1 record (singular "job", most recent)
-            → MCP_TOOL: query_job_logs {{"limit": 1, "format": "table"}}
-
-            "show last failed job" or "latest failed job"
-            → Analysis: JOB LOGS query + status filter + limit to 1 record
-            → MCP_TOOL: query_job_logs {{"status": "FAILED", "limit": 1, "format": "table"}}
-
-            "reason of last failed job" or "reason for last failed job" or "why did last job fail" or "last failed job reason" or "what caused last job to fail" or "failure reason for last job" or "error message from last failed job"
-            → Analysis: JOB LOGS query + status filter + limit to 1 record + reason only format
-            → MCP_TOOL: query_job_logs {{"status": "FAILED", "limit": 1, "format": "reason_only"}}
-
-            "job statistics" or "job summary" or "job performance"
-            → Analysis: JOB STATISTICS query + shows success rates and metrics
-            → MCP_TOOL: get_job_summary_stats {{}}
-
-            "count of successful jobs" or "how many successful jobs" or "number of successful jobs" or "successful job count" or "successful jobs count"
-            → Analysis: JOB STATISTICS query + shows only successful job count
-            → MCP_TOOL: get_job_summary_stats {{"format": "count_only", "count_type": "successful"}}
-
-            "count of failed jobs" or "how many failed jobs" or "number of failed jobs" or "failed job count" or "failed jobs count"
-            → Analysis: JOB STATISTICS query + shows only failed job count
-            → MCP_TOOL: get_job_summary_stats {{"format": "count_only", "count_type": "failed"}}
-
-            "count of jobs" or "how many jobs" or "number of jobs" or "total job count" or "job count" or "jobs count"
-            → Analysis: JOB STATISTICS query + shows only total job count
-            → MCP_TOOL: get_job_summary_stats {{"format": "count_only", "count_type": "total"}}
-
-            "count of successful jobs in last month" or "count of successful jobs from last month" or "successful jobs in last month"
-            → Analysis: JOB STATISTICS query with date filter + shows only successful job count for previous calendar month
-            → MCP_TOOL: get_job_summary_stats {{"format": "count_only", "count_type": "successful", "date_range": "last_month"}}
-
-            "count of failed jobs in last month" or "count of failed jobs from last month" or "failed jobs in last month"
-            → Analysis: JOB STATISTICS query with date filter + shows only failed job count for previous calendar month  
-            → MCP_TOOL: get_job_summary_stats {{"format": "count_only", "count_type": "failed", "date_range": "last_month"}}
-
-            "count of jobs in last month" or "count of jobs from last month" or "jobs in last month"
-            → Analysis: JOB STATISTICS query with date filter + shows only total job count for previous calendar month
-            → MCP_TOOL: get_job_summary_stats {{"format": "count_only", "count_type": "total", "date_range": "last_month"}}
-
-            "count of jobs today" or "jobs today" or "job count today"
-            → Analysis: JOB STATISTICS query with date filter + shows job counts for today
-            → MCP_TOOL: get_job_summary_stats {{"date_range": "today"}}
-
-            "count of jobs this week" or "jobs this week" or "job count this week"
-            → Analysis: JOB STATISTICS query with date filter + shows job counts for this week
-            → MCP_TOOL: get_job_summary_stats {{"date_range": "this_week"}}
-
-            "count of jobs from September 15 to September 30" or "jobs from 9/15 to 9/30" or "job count from 9/15/2025 to 9/30/2025"
-            → Analysis: JOB STATISTICS query with custom date range + convert to from_9/15/2025_to_9/30/2025 format
-            → MCP_TOOL: get_job_summary_stats {{"date_range": "from_9/15/2025_to_9/30/2025"}}
-
-            "count of failed jobs from September 15 to September 30" or "failed jobs from 9/15 to 9/30"
-            → Analysis: JOB STATISTICS query with custom date range for failed jobs
-            → MCP_TOOL: get_job_summary_stats {{"date_range": "from_9/15/2025_to_9/30/2025"}}
-
-            "count of successful jobs from October 1 to October 3" or "successful jobs from 10/1 to 10/3"
-            → Analysis: JOB STATISTICS query with custom date range for successful jobs
-            → MCP_TOOL: get_job_summary_stats {{"date_range": "from_10/1/2025_to_10/3/2025"}}
-
-            "jobs from today" or "today's jobs"
-            → Analysis: JOB LOGS query + date filter for today
-            → MCP_TOOL: query_job_logs {{"date_range": "today"}}
-
-            "archive jobs from last week"
-            → Analysis: JOB LOGS query + job type filter + date filter
-            → MCP_TOOL: query_job_logs {{"job_type": "ARCHIVE", "date_range": "last_7_days"}}
-
-            "jobs with 0 records affected" or "jobs with zero records affected" or "jobs that affected 0 records"
-            → Analysis: JOB LOGS query + filter for jobs with no records affected
-            → MCP_TOOL: query_job_logs {{"zero_records_only": true}}
-
-            "jobs with no records affected" or "jobs that didn't affect any records"
-            → Analysis: JOB LOGS query + filter for jobs with no records affected
-            → MCP_TOOL: query_job_logs {{"zero_records_only": true}}
-
-            "jobs that affected records" or "jobs with records affected" or "jobs that changed data"
-            → Analysis: JOB LOGS query + filter for jobs with records affected
-            → MCP_TOOL: query_job_logs {{"has_records_only": true}}
-
-            "jobs that affected more than 100 records" or "jobs with over 100 records"
-            → Analysis: JOB LOGS query + minimum records filter
-            → MCP_TOOL: query_job_logs {{"min_records_affected": 100}}
-
-            "jobs that affected less than 10 records" or "jobs with under 10 records"
-            → Analysis: JOB LOGS query + maximum records filter
-            → MCP_TOOL: query_job_logs {{"max_records_affected": 9}}
-
-            "delete jobs" or "deletion jobs" or "jobs that deleted data"
-            → Analysis: JOB LOGS query + job type filter for delete operations
-            → MCP_TOOL: query_job_logs {{"job_type": "DELETE"}}
-
-            "archive jobs" or "archiving jobs" or "jobs that archived data"
-            → Analysis: JOB LOGS query + job type filter for archive operations
-            → MCP_TOOL: query_job_logs {{"job_type": "ARCHIVE"}}
-
-            "failed archive jobs" or "failed archiving jobs"
-            → Analysis: JOB LOGS query + job type filter + status filter
-            → MCP_TOOL: query_job_logs {{"job_type": "ARCHIVE", "status": "FAILED"}}
-
-            "successful delete jobs" or "successful deletion jobs"
-            → Analysis: JOB LOGS query + job type filter + status filter
-            → MCP_TOOL: query_job_logs {{"job_type": "DELETE", "status": "SUCCESS"}}
-
-            "jobs on dsiactivities table" or "jobs for activities table"
-            → Analysis: JOB LOGS query + table name filter
-            → MCP_TOOL: query_job_logs {{"table_name": "dsiactivities"}}
-
-            "jobs on archive tables" or "jobs for archived data"
-            → Analysis: JOB LOGS query + table name filter for archive tables
-            → MCP_TOOL: query_job_logs {{"table_name": ["dsiactivitiesarchive", "dsitransactionlogarchive"]}}
-
-            "jobs containing error" or "jobs with error message" or "jobs that mention timeout"
-            → Analysis: JOB LOGS query + text search in reason field
-            → MCP_TOOL: query_job_logs {{"reason_contains": "error"}}
-
-            "yesterday's failed jobs" or "failed jobs from yesterday"
-            → Analysis: JOB LOGS query + date range + status filter
-            → MCP_TOOL: query_job_logs {{"date_range": "yesterday", "status": "FAILED"}}
-
-            "running jobs" or "jobs in progress" or "currently running jobs"
-            → Analysis: JOB LOGS query + status filter for in-progress
-            → MCP_TOOL: query_job_logs {{"status": "IN_PROGRESS"}}
-
-            "which region is connected" or "current region" or "region status"
-            → Analysis: REGION STATUS query + region information needed
-            → MCP_TOOL: region_status  {{}}
-
-            CONTEXTUAL FOLLOW-UPS (use conversation history):
-            Previous: "activities older than 15 days" → User: "for then 12 days"
-            → Analysis: Context shows previous query was about activities + new time period
-            → MCP_TOOL: get_table_stats dsiactivities {{"date_filter": "older_than_12_days"}}
-
-            Previous: "count transactions" → User: "what about 30 days old"
-            → Analysis: Context shows previous query was about transactions + new filter
-            → MCP_TOOL: get_table_stats dsitransactionlog {{"date_filter": "older_than_30_days"}}
-
-            Previous: "archive transactions older than 30 days" → User: "count"
-            → Analysis: Context shows previous operation was on transactions + now count same table
-            → MCP_TOOL: get_table_stats dsitransactionlog {{}}
-
-            Previous: "count of archived transactions" → User: "older than 20 days"
-            → Analysis: Context shows previous query was about ARCHIVE transactions + new date filter + PRESERVE archive context
-            → MCP_TOOL: get_table_stats dsitransactionlogarchive {{"date_filter": "older_than_20_days"}}
-
-            Previous: "show transactions" → User: "count"
-            → Analysis: Context shows previous query was about transactions + now count same table
-            → MCP_TOOL: get_table_stats dsitransactionlog {{}}
-
-            Previous: "transactions statistics" → User: "count them"
-            → Analysis: Context shows previous query was about transactions + now count same table
-            → MCP_TOOL: get_table_stats dsitransactionlog {{}}
-
-            Previous: "show archive records" → User: "for activities only"
-            → Analysis: Context shows archive request + now specify activities archive
-            → MCP_TOOL: get_table_stats dsiactivitiesarchive {{}}
-
-            Previous: "show archived transactions" → User: "older than 5 days"
-            → Analysis: Context shows archive transactions + new date filter + PRESERVE archive context
-            → MCP_TOOL: get_table_stats dsitransactionlogarchive {{"date_filter": "older_than_5_days"}}
-
-            CRITICAL: DISTINGUISH QUERY vs DELETE OPERATIONS:
-            
-            QUERY OPERATIONS (show/count archived data):
-            "archived transactions" → User wants to SEE archived transactions
-            → Analysis: QUERY operation - show count/stats of archived records
-            → MCP_TOOL: get_table_stats dsitransactionlogarchive {{}}
-            
-            "archived activities older than 6 months" → User wants to SEE archived activities  
-            → Analysis: QUERY operation - show count/stats with date filter
-            → MCP_TOOL: get_table_stats dsiactivitiesarchive {{"date_filter": "older_than_6_months"}}
-            
-            DELETE OPERATIONS (delete archived data):
-            Previous query: "archived transactions" → User: "delete them"
-            → Analysis: User wants to DELETE archived records from previous query
-            → MCP_TOOL: delete_archived_records dsitransactionlogarchive {{}}
-            
-            Previous query: "archived activities older than 6 months" → User: "delete those"
-            → Analysis: User wants to DELETE archived records with same filter  
-            → MCP_TOOL: delete_archived_records dsiactivitiesarchive {{"date_filter": "older_than_6_months"}}
-            
-            CONTEXTUAL ARCHIVE OPERATIONS (use conversation history):
-            Previous: "activities older than 30 days" (got count result) → User: "archive them"
-            → Analysis: Context shows previous query about activities older than 30 days + now archive those EXACT records
-            → MCP_TOOL: archive_records dsiactivities {{"date_filter": "older_than_30_days"}}
-
-            Previous: "transactions older than 45 days" → User: "archive those records"
-            → Analysis: Context shows previous query about transactions + now archive with SAME filter
-            → MCP_TOOL: archive_records dsitransactionlog {{"date_filter": "older_than_45_days"}}
-
-            Previous: "count activities older than 12 months" → User: "yes archive them"
-            → Analysis: Previous query had activities + "older than 12 months" filter + now archive those
-            → MCP_TOOL: archive_records dsiactivities {{"date_filter": "older_than_12_months"}}
-
-            Previous: "show transactions from last year" → User: "archive those"
-            → Analysis: Previous query had transactions + "from last year" filter + now archive those
-            → MCP_TOOL: archive_records dsitransactionlog {{"date_filter": "from_last_year"}}
-
-            Previous: "count activities older than 6 months" → User: "yes archive them all"
-            → Analysis: Context shows previous query about activities older than 6 months + confirmation to archive
-            → MCP_TOOL: archive_records dsiactivities {{"date_filter": "older_than_6_months"}}
-
-            CONVERSATIONAL REQUESTS (should be handled elsewhere, not by MCP tools):
-            "hello", "hi", "hey"
-            → Analysis: Simple greeting - this should be handled by conversational system, not MCP
-            → Return None (let conversational handler take over)
-
-            "help", "what can you do"
-            → Analysis: General help request - this should be handled by conversational system
-            → Return None (let conversational handler take over)
-
-            "what is today's date", "what time is it", "current date"
-            → Analysis: General informational question - this should be handled by conversational system
-            → Return None (let conversational handler take over)
-
-            "what is weather in India", "today's weather in Pune", "weather forecast"
-            → Analysis: Weather/off-topic question - this should be handled by conversational system
-            → Return None (let conversational handler take over)
-
-            "what does archive mean", "how does archiving work", "what is the archive policy"
-            → Analysis: Policy/explanation question - this should be handled by conversational system
-            → Return None (let conversational handler take over)
-
-            "For how much old data do you archive", "What is the archive policy", "How does archiving work"
-            → Analysis: Policy/explanation questions - not requesting data, asking about processes
-            → Return None (let conversational handler take over)
-
-            "Archive means what", "What does archive mean", "Can you explain archiving"
-            → Analysis: Definition/explanation requests - not data operations
-            → Return None (let conversational handler take over)
-
-            "sports news", "cooking recipes", "latest movies", "stock prices"
-            → Analysis: Off-topic requests - not related to database/log management
-            → Return None (let conversational handler take over)
-
-            "delete database", "drop table", "truncate table", "delete all records", "remove database"
-            → Analysis: Destructive/dangerous requests - should be handled by conversational system with security response
-            → Return None (let conversational handler take over)
-
-            "drop table activities", "delete entire database", "truncate dsiactivities", "remove all data"
-            → Analysis: Destructive operations outside mandate - conversational system will decline with security explanation
-            → Return None (let conversational handler take over)
-
-            UNCLEAR REQUESTS (ask for clarification):
-            "show data"
-            → Analysis: Unclear which table - activities or transactions?
-            → CLARIFY_TABLE_NEEDED
-
-            "archive old stuff"
-            → Analysis: Unclear which table and what "old" means
-            → CLARIFY_TABLE_NEEDED
-
-            "delete records from last week"
-            → Analysis: Unclear which table to delete from
-            → CLARIFY_TABLE_NEEDED
-
-            "show me some information"
-            → Analysis: Too vague - what information from which table?
-            → CLARIFY_REQUEST_NEEDED
-
-            "count things older than something"
-            → Analysis: Too vague - which table and what date criteria?
-            → CLARIFY_FILTERS_NEEDED
-
-            "archive stuff from a while ago"
-            → Analysis: Unclear table and vague time reference
-            → CLARIFY_TABLE_NEEDED
-
-            CRITICAL RESPONSE FORMAT:
-            You MUST respond with ONLY this exact format (no additional text, analysis, or explanations):
+            1. get_table_stats - For data queries (counts, statistics, "show", "list")
+            2. archive_records - For archiving old records to archive tables
+            3. delete_archived_records - For deleting records from archive tables
+            4. health_check - For system health/status checks
+            5. region_status - For region connection status and current region info
+            6. query_job_logs - For job execution history, logs, status
+            7. get_job_summary_stats - For job performance metrics, success rates
+
+            CRITICAL ANALYSIS RULES:
+
+            1. JOB QUERIES (HIGHEST PRIORITY):
+            - Any mention of "job", "jobs", "job logs" → Use job tools
+            - Job details/logs: "show jobs", "recent jobs", "failed jobs" → query_job_logs
+            - Job statistics: "count of jobs", "job summary" → get_job_summary_stats
+            - "last job" → {{"limit": 1, "format": "table"}} (NO status filter unless specified)
+            - "last successful job" → {{"status": "SUCCESS", "limit": 1, "format": "table"}}
+            - "show jobs" → {{"limit": 5, "format": "table"}}
+            - "successful jobs from last week" → {{"status": "SUCCESS", "date_range": "last_7_days", "format": "table"}}
+            - "failed jobs" → {{"status": "FAILED", "format": "table"}}
+            - "archive jobs" = JOB LOGS about archive operations, NOT archived data
+
+            2. DATA QUERIES:
+            - "count", "show", "list", "statistics" about records → get_table_stats
+            - "count activities" → get_table_stats dsiactivities {{}}
+            - "archived transactions" → get_table_stats dsitransactionlogarchive {{}}
+            - Main vs Archive: Use archive tables only when "archive"/"archived" explicitly mentioned
+
+            3. OPERATIONS:
+            - "archive" with records/activities/transactions → archive_records
+            - "delete" with archived data → delete_archived_records
+
+            4. REGION QUERIES:
+            - "region", "connected", "current region" → region_status
+
+            CONTEXT HANDLING (CRITICAL):
+            - PRESERVE context from previous queries for follow-up requests
+            - "archive them", "delete them", "count them" → Use EXACT table + filters from previous query
+            - Example: Previous "activities older than 30 days" → "archive them" = archive_records dsiactivities {{"date_filter": "older_than_30_days"}}
+            - Archive context preservation: After "archived X" query, follow-ups stay on archive table
+
+            TABLE SELECTION LOGIC:
+            - NEW explicit requests: "count transactions" → dsitransactionlog (main table)
+            - CONTEXTUAL references: Use previous table from conversation
+            - Archive preservation: "archived X" context + follow-up → keep archive table
+
+            DATE FILTER PARSING:
+            - "older than 10 months" → {{"date_filter": "older_than_10_months"}}
+            - "from last year" → {{"date_filter": "from_last_year"}}
+            - "yesterday" → {{"date_filter": "yesterday"}}
+            - "today" → {{"date_range": "today"}} (for jobs)
+
+            ERROR HANDLING:
+            - Greetings, policy questions, off-topic → Return None
+            - Destructive operations (drop table, delete database) → Return None
+            - Vague requests without context → CLARIFY_[TYPE]_NEEDED
+
+            RESPONSE FORMAT EXAMPLES:
+            "count activities older than 12 months" → MCP_TOOL: get_table_stats dsiactivities {{"date_filter": "older_than_12_months"}}
+            "last job" → MCP_TOOL: query_job_logs {{"limit": 1, "format": "table"}}
+            "failed jobs today" → MCP_TOOL: query_job_logs {{"status": "FAILED", "date_range": "today"}}
+            "archive old activities" → MCP_TOOL: archive_records dsiactivities {{}}
+            "region status" → MCP_TOOL: region_status {{}}
+            "hello" → None
+            "show data" (no context) → CLARIFY_TABLE_NEEDED
+
+            CRITICAL: Respond with ONLY one of these formats:
             MCP_TOOL: [tool_name] [table_name] [filters_json]
-
-            For clarification requests, respond with ONLY one of these (no additional text):
             CLARIFY_TABLE_NEEDED
             CLARIFY_FILTERS_NEEDED  
             CLARIFY_REQUEST_NEEDED
+            None
 
-            Example valid responses:
-            MCP_TOOL: get_table_stats dsiactivities {{"date_filter": "older_than_12_months"}}
-            MCP_TOOL: archive_records dsiactivities {{}}
-            CLARIFY_TABLE_NEEDED
-
-            DO NOT provide analysis, explanations, or step-by-step reasoning. Respond ONLY with the format above.
+            NO analysis, explanations, or additional text.
             """
             
             url = f"{self.base_url}/chat/completions"
@@ -683,7 +349,11 @@ class OpenAIService:
                     logger.warning(f"Enhanced LLM did not return expected format for message '{user_message}'. LLM response: '{result_text}'")
                 
                 # Try to extract operation intent and provide fallback response for common cases
-                if self._is_archive_request(user_message):
+                if self._is_job_logs_request(user_message):
+                    # Create fallback job logs operation 
+                    logger.info(f"Providing fallback job logs operation for: '{user_message}'")
+                    return await self._create_fallback_job_logs_operation(user_message, conversation_context)
+                elif self._is_archive_request(user_message):
                     # Create fallback archive operation with context
                     logger.info(f"Providing fallback archive operation for: '{user_message}'")
                     return await self._create_fallback_archive_operation(user_message, conversation_context)
@@ -698,6 +368,19 @@ class OpenAIService:
             logger.error(f"Enhanced LLM parsing failed for message '{user_message}': {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
+            
+            # Try fallback logic when API calls fail
+            logger.info(f"Attempting fallback operations due to LLM API failure")
+            if self._is_job_logs_request(user_message):
+                logger.info(f"Providing fallback job logs operation for: '{user_message}'")
+                return await self._create_fallback_job_logs_operation(user_message, conversation_context)
+            elif self._is_archive_request(user_message):
+                logger.info(f"Providing fallback archive operation for: '{user_message}'")
+                return await self._create_fallback_archive_operation(user_message, conversation_context)
+            elif self._is_stats_request(user_message):
+                logger.info(f"Providing fallback stats operation for: '{user_message}'")
+                return await self._create_fallback_stats_operation(user_message, conversation_context)
+            
             return None
 
     async def _parse_enhanced_mcp_response(self, llm_response: str, original_message: str) -> Optional[Any]:
@@ -706,6 +389,9 @@ class OpenAIService:
             # Clean up the response and find the MCP_TOOL line
             cleaned_response = llm_response.strip()
             mcp_line = None
+            
+            # Debug: log the full LLM response
+            logger.info(f"Full LLM response for parsing: '{llm_response}' (original message: '{original_message}')")
             
             # Handle case where the entire response is the MCP_TOOL line
             if cleaned_response.startswith("MCP_TOOL:"):
@@ -716,6 +402,8 @@ class OpenAIService:
                     if "MCP_TOOL:" in line:
                         mcp_line = line.strip()
                         break
+            
+            logger.info(f"Extracted MCP line: '{mcp_line}'")
             
             if not mcp_line:
                 logger.error(f"No MCP_TOOL line found in LLM response. Full response: '{llm_response}'. Original message: '{original_message}'")
@@ -738,6 +426,11 @@ class OpenAIService:
                 all_parts = cleaned_line.split(" ", 2)
                 table_name = all_parts[1].strip() if len(all_parts) > 1 else ""
                 filters_str = all_parts[2].strip() if len(all_parts) > 2 else "{}"
+                
+                # Special case: if table_name looks like a JSON object, it's actually filters for a general query
+                if table_name.startswith('{') and table_name.endswith('}'):
+                    filters_str = table_name
+                    table_name = ""
             
             # Validate tool name is not empty and is valid
             valid_tools = ["get_table_stats", "archive_records", "delete_archived_records", "health_check", "region_status", "query_job_logs", "get_job_summary_stats"]
@@ -770,26 +463,35 @@ class OpenAIService:
             valid_tables = ["dsiactivities", "dsitransactionlog", "dsiactivitiesarchive", "dsitransactionlogarchive", ""]
             requires_table = tool_name not in tools_without_tables
             
-            if table_name and table_name not in valid_tables:
+            # Special case: get_table_stats can work with empty table name for general database stats
+            if tool_name == "get_table_stats" and not table_name:
+                # This is valid - general database stats
+                pass
+            elif table_name and table_name not in valid_tables:
                 logger.warning(f"Invalid table name '{table_name}' provided by LLM. Valid tables: {valid_tables}")
-                # Create error result for invalid table name
-                class InvalidTableResult:
-                    def __init__(self, table_name):
-                        self.is_clarification_request = True
-                        self.clarification_message = (
-                            f"Please specify one of the following valid tables:\n\n"
-                            "Available Tables:\n\n"
-                            "• dsiactivities - Current activity logs\n"
-                            "• dsitransactionlog - Current transaction logs\n"
-                            "• dsiactivitiesarchive - Archived activity logs\n"
-                            "• dsitransactionlogarchive - Archived transaction logs\n\n"
-                        )
-                        self.is_database_operation = False
-                        self.tool_used = None
-                        self.table_used = None
-                        # Don't set mcp_result for clarification requests
-                        self.mcp_result = None
-                return InvalidTableResult(table_name)
+                # For get_table_stats with invalid table name, try to use general database stats instead
+                if tool_name == "get_table_stats":
+                    logger.info(f"Invalid table name '{table_name}' for get_table_stats, using general database stats instead")
+                    table_name = ""  # Use empty table name for general stats
+                else:
+                    # Create error result for invalid table name
+                    class InvalidTableResult:
+                        def __init__(self, table_name):
+                            self.is_clarification_request = True
+                            self.clarification_message = (
+                                f"Please specify one of the following valid tables:\n\n"
+                                "Available Tables:\n\n"
+                                "• dsiactivities - Current activity logs\n"
+                                "• dsitransactionlog - Current transaction logs\n"
+                                "• dsiactivitiesarchive - Archived activity logs\n"
+                                "• dsitransactionlogarchive - Archived transaction logs\n\n"
+                            )
+                            self.is_database_operation = False
+                            self.tool_used = None
+                            self.table_used = None
+                            # Don't set mcp_result for clarification requests
+                            self.mcp_result = None
+                    return InvalidTableResult(table_name)
             
             # Parse filters JSON
             try:
@@ -892,32 +594,115 @@ class OpenAIService:
             logger.error(f"Enhanced MCP response parsing failed: {e}")
             return None
 
-    def _is_archive_request(self, message: str) -> bool:
-        """Check if message is requesting an archive operation (not policy questions)"""
+    def _is_job_logs_request(self, message: str) -> bool:
+        """Check if message is requesting job logs/execution information"""
         message_lower = message.lower().strip()
         
-        # Exclude policy/explanation questions
-        explanation_patterns = [
-            'what does archive mean', 'archive means what', 'what is archive', 
-            'explain archive', 'how does archive work', 'what is the archive policy',
-            'for how much old data do you archive', 'archive policy'
+        # Job execution patterns
+        job_execution_patterns = [
+            'last job', 'latest job', 'most recent job', 'recent job',
+            'last job executed', 'latest job executed', 'most recent job executed',
+            'last executed job', 'recent executed job', 'show job', 'job logs',
+            'job history', 'job status', 'job execution', 'executed job',
+            'show jobs', 'recent jobs', 'job statistics', 'job summary',
+            'archive jobs', 'delete jobs', 'failed jobs', 'successful jobs',
+            'jobs from', 'jobs today', 'jobs yesterday', 'all jobs', 'get jobs',
+            'jobs between', 'list jobs', 'get all jobs', 'display jobs',
+            'jobs executed', 'jobs were executed', 'jobs have run',
+            'jobs ran', 'what jobs', 'which jobs', 'jobs from last',
+            'last job archived', 'job archived', 'archived job',
+            'last job deleted', 'job deleted', 'deleted job'
         ]
         
-        if any(pattern in message_lower for pattern in explanation_patterns):
+        return any(pattern in message_lower for pattern in job_execution_patterns)
+
+    def _is_archive_request(self, message: str) -> bool:
+        """Check if message is requesting an archive operation using semantic analysis"""
+        message_lower = message.lower().strip()
+        
+        # Check for policy/explanation questions first (these should not be archive operations)
+        explanation_indicators = [
+            'what does', 'what is', 'explain', 'how does', 'policy', 'means what',
+            'for how much', 'can you explain'
+        ]
+        
+        # If it's clearly asking for explanation/policy, it's not an operation request
+        if any(indicator in message_lower for indicator in explanation_indicators) and 'archive' in message_lower:
             return False
         
-        # Only match actual archive operation requests
-        archive_operation_keywords = [
-            'archive data', 'archive records', 'archive activities', 'archive transactions',
-            'move old', 'move to archive', 'start archive', 'run archive'
+        # Use semantic understanding - look for action-oriented language patterns
+        # that suggest actual archive operations rather than just mentions
+        action_patterns = [
+            ('archive', ['data', 'records', 'activities', 'transactions', 'old', 'them', 'those']),
+            ('move', ['archive', 'old']),
+            ('start', ['archive']),
+            ('run', ['archive'])
         ]
-        return any(keyword in message_lower for keyword in archive_operation_keywords)
+        
+        for action, objects in action_patterns:
+            if action in message_lower:
+                # Check if any object words appear near the action
+                if any(obj in message_lower for obj in objects):
+                    return True
+                # Or if it's a simple direct command like "archive"
+                if len(message_lower.split()) <= 3 and action == message_lower.strip():
+                    return True
+        
+        return False
 
     def _is_stats_request(self, message: str) -> bool:
-        """Check if message is requesting statistics/counts"""
+        """Check if message is requesting statistics/counts using semantic analysis"""
         message_lower = message.lower().strip()
-        stats_keywords = ['show', 'count', 'list', 'display', 'statistics', 'stats', 'how many']
-        return any(keyword in message_lower for keyword in stats_keywords)
+        
+        # Look for information-seeking patterns rather than just keywords
+        query_patterns = [
+            # Direct information requests
+            'show', 'display', 'list', 'view', 'overview',
+            # Counting requests  
+            'count', 'how many', 'number of',
+            # Statistical requests
+            'statistics', 'stats', 'summary',
+            # Question patterns
+            'what are', 'what is', 'how much',
+            # Job execution patterns (implicit queries)
+            'last', 'latest', 'most recent', 'recent'
+        ]
+        
+        # Check for database-related objects that suggest data queries
+        data_objects = [
+            'activities', 'transactions', 'records', 'data', 'logs',
+            'archive', 'archived', 'table', 'database', 'job', 'jobs'
+        ]
+        
+        # Special patterns for database overview
+        overview_patterns = [
+            'overview of all database tables',
+            'overview of database tables',
+            'all database tables',
+            'database overview'
+        ]
+        
+        # Check for overview patterns first
+        if any(pattern in message_lower for pattern in overview_patterns):
+            return True
+        
+        # More intelligent detection: look for query patterns combined with data objects
+        has_query_pattern = any(pattern in message_lower for pattern in query_patterns)
+        has_data_object = any(obj in message_lower for obj in data_objects)
+        
+        # Also detect simple contextual references that might be stats requests
+        contextual_patterns = ['them', 'those', 'it', 'that data', 'total', 'in total']
+        has_contextual_ref = any(pattern in message_lower for pattern in contextual_patterns)
+        
+        # Special handling for job execution patterns
+        job_execution_patterns = [
+            'last job', 'latest job', 'most recent job', 'recent job',
+            'last job executed', 'latest job executed', 'most recent job executed',
+            'last executed job', 'recent executed job'
+        ]
+        is_job_execution_query = any(pattern in message_lower for pattern in job_execution_patterns)
+        
+        return (has_query_pattern and has_data_object) or (has_query_pattern and has_contextual_ref) or is_job_execution_query
 
     async def _create_fallback_archive_operation(self, user_message: str, conversation_context: str = None) -> Any:
         """Create fallback archive operation with separate table and filter context handling"""
@@ -973,9 +758,13 @@ class OpenAIService:
             
             # Determine filters using context-awareness
             filters = self._determine_filters_from_context(user_message, context_info)
+            
+            # Special handling for yesterday queries that might be misrouted
+            if "yesterday" in user_message.lower() and not filters:
+                filters = {"date_filter": "yesterday"}
                         
             # Execute stats operation
-            mcp_result = await get_table_stats(table_name, filters, "system")
+            mcp_result = await get_table_stats(table_name, filters)
             
             # Create result object with context preservation indicator
             class EnhancedLLMResult:
@@ -999,6 +788,104 @@ class OpenAIService:
             
         except Exception as e:
             logger.error(f"Fallback stats operation failed: {e}")
+            return None
+    
+    async def _create_fallback_job_logs_operation(self, user_message: str, conversation_context: str = None) -> Any:
+        """Create fallback job logs operation for job execution queries"""
+        try:
+            from cloud_mcp.server import _query_job_logs
+            
+            # Default filters for most job execution queries - limit all job lists to 5
+            filters = {"limit": 5, "format": "table"}
+            
+            # Check for specific patterns that might need different handling
+            user_msg_lower = user_message.lower()
+            
+            # If asking for multiple jobs, keep limit at 5
+            if any(plural in user_msg_lower for plural in ['jobs', 'recent jobs', 'show jobs']):
+                filters["limit"] = 5
+                filters["format"] = "table"  
+            
+            # If asking for ALL jobs, still limit to 5 for consistency
+            if any(all_pattern in user_msg_lower for all_pattern in ['all jobs', 'get all jobs']):
+                filters["limit"] = 5
+                filters["format"] = "table"  
+            
+            # Detect job type filters (including past tense patterns)
+            if 'archive job' in user_msg_lower or 'job archived' in user_msg_lower or 'archived job' in user_msg_lower:
+                filters["job_type"] = "ARCHIVE"
+                filters["limit"] = 5
+            elif 'delete job' in user_msg_lower or 'job deleted' in user_msg_lower or 'deleted job' in user_msg_lower:
+                filters["job_type"] = "DELETE"
+                filters["limit"] = 5
+            
+            # Detect status filters
+            if 'failed' in user_msg_lower:
+                filters["status"] = "FAILED"
+                filters["limit"] = 5
+                filters["format"] = "table"  
+            elif 'successful' in user_msg_lower or 'success' in user_msg_lower:
+                filters["status"] = "SUCCESS"
+                filters["limit"] = 5
+                filters["format"] = "table"  
+            
+            # Detect date filters
+            if 'today' in user_msg_lower:
+                filters["date_range"] = "today"
+                filters["limit"] = 5
+                filters["format"] = "table"  
+            elif 'yesterday' in user_msg_lower:
+                filters["date_range"] = "yesterday"
+                filters["limit"] = 5
+                filters["format"] = "table"  
+            elif 'last week' in user_msg_lower:
+                filters["date_range"] = "last_7_days"
+                filters["limit"] = 5
+                filters["format"] = "table"  
+            elif 'last month' in user_msg_lower:
+                filters["date_range"] = "last_month"
+                filters["limit"] = 5
+                filters["format"] = "table"  
+            elif 'executed last week' in user_msg_lower or 'were executed last week' in user_msg_lower:
+                filters["date_range"] = "last_7_days"
+                filters["limit"] = 5
+                filters["format"] = "table"  
+            # Handle custom date ranges
+            elif self._has_custom_date_range(user_msg_lower):
+                filters["date_range"] = self._extract_custom_date_range(user_message)
+                filters["limit"] = 5
+                filters["format"] = "table"  
+            
+            # If asking for job statistics/summary
+            if any(stat in user_msg_lower for stat in ['statistics', 'summary', 'stats']):
+                from cloud_mcp.server import _get_job_summary_stats
+                mcp_result = await _get_job_summary_stats(filters)
+                tool_name = "get_job_summary_stats"
+            else:
+                # Regular job logs query
+                mcp_result = await _query_job_logs(filters)
+                tool_name = "query_job_logs"
+            
+            # Create result object
+            class EnhancedLLMResult:
+                def __init__(self, tool, filters, mcp_result):
+                    self.tool_used = tool
+                    self.table_used = "" 
+                    self.filters = filters
+                    self.mcp_result = mcp_result
+                    self.is_database_operation = True
+                    self.operation = None
+                    self.context_preserved = False
+                    self.context_info = {
+                        "table": "",
+                        "filters": filters,
+                        "operation": tool
+                    }
+            
+            return EnhancedLLMResult(tool_name, filters, mcp_result)
+            
+        except Exception as e:
+            logger.error(f"Fallback job logs operation failed: {e}")
             return None
         
     async def _handle_clarification_request(self, llm_response: str, original_message: str) -> Any:
@@ -1129,21 +1016,13 @@ class OpenAIService:
             • When asked about the current date, always refer to: {current_date}
 
             - EXAMPLES OF APPROPRIATE RESPONSES:
-
             User: "Hello" → "Hello! I'm your Cloud Inventory Log Management assistant. I can help you view database statistics, check region connections, manage archiving operations, and explain safety procedures. What would you like to know about your log data?"
-
             User: "What's the weather?" → "I'm specialized in Cloud Inventory Log Management and can't help with weather information. However, I can help you with database operations, viewing statistics, archiving procedures, and system health checks. What would you like to know about your log data?"
-
             User: "Delete Database" → "I cannot and will not perform destructive database operations like deleting entire databases. I'm designed with safety-first principles and only support controlled archiving operations with built-in safeguards. My role is limited to safe data viewing and controlled archiving with multiple safety checks. Would you like to see table statistics or learn about our archiving procedures instead?"
-
             User: "Drop table activities" → "I don't have permissions to drop tables or perform destructive schema operations. Table dropping is a dangerous operation that could cause data loss and is outside my mandate. I can help you with safe operations like viewing table statistics, archiving old records, or explaining our data retention policies. What would you like to know about the activities table?"
-
             User: "Show me something" → "I'd be happy to show you information! Could you be more specific about what you'd like to see? For example:\n• 'Show activities statistics'\n• 'Count transactions from last month'\n• 'Display archive table information'\n• 'Show database health status'\n\nWhat type of data are you interested in?"
-
             User: "Archive policy?" → "Our archiving policy includes several safety measures:\n• Records must be older than 7 days before archiving\n• Only archived records older than 30 days can be deleted\n• All operations require confirmation and are logged\n• Archive operations move data to dedicated archive tables (dsiactivitiesarchive, dsitransactionlogarchive)\n\nWould you like to see statistics for any specific table or learn about performing an archive operation?"
-
             User: "Which region is connected?" → [Use region_status tool to show current region connections, available regions, and connection status for all regions]
-
             Remember: Match your response style and detail level to the user's question type and apparent technical knowledge level."""
 
     async def generate_response(
@@ -1315,5 +1194,77 @@ class OpenAIService:
                 ],
                 "source": "fallback"
             }
+    
+    def _has_custom_date_range(self, user_msg_lower: str) -> bool:
+        """Check if the message contains a custom date range pattern"""
+        import re
+        
+        # Patterns for date ranges
+        patterns = [
+            r'september\s+\d+\s+to\s+september\s+\d+',  # "september 15 to september 30"
+            r'from\s+september\s+\d+\s+to\s+september\s+\d+',  # "from september 15 to september 30"
+            r'\d+/\d+\s+(?:and|to)\s+\d+/\d+',  # "9/15 and 9/30" or "9/15 to 9/30"
+            r'between\s+\d+/\d+\s+and\s+\d+/\d+',  # "between 9/15 and 9/30"
+            r'get\s+all\s+jobs\s+between\s+\d+/\d+\s+and\s+\d+/\d+',  # "get all jobs between 9/15 and 9/30"
+            r'october\s+\d+\s+to\s+october\s+\d+',  # "october 1 to october 3"
+            r'from\s+october\s+\d+\s+to\s+october\s+\d+',  # "from october 1 to october 3"
+            r'from\s+\d+/\d+\s+to\s+\d+/\d+',  # "from 9/15 to 9/30"
+            r'jobs\s+from\s+\d+/\d+\s+to\s+\d+/\d+',  # "jobs from 9/15 to 9/30"
+        ]
+        
+        for pattern in patterns:
+            if re.search(pattern, user_msg_lower):
+                return True
+        return False
+    
+    def _extract_custom_date_range(self, user_message: str) -> str:
+        """Extract and format custom date range from user message"""
+        import re
+        from datetime import datetime
+        
+        user_msg_lower = user_message.lower()
+        current_year = datetime.now().year
+        
+        # Pattern 1: "september 15 to september 30" or "from september 15 to september 30"
+        pattern1 = r'(?:from\s+)?september\s+(\d+)\s+to\s+september\s+(\d+)'
+        match1 = re.search(pattern1, user_msg_lower)
+        if match1:
+            start_day = match1.group(1)
+            end_day = match1.group(2)
+            return f"from_9/{start_day}/{current_year}_to_9/{end_day}/{current_year}"
+        
+        # Pattern 2: "9/15 and 9/30" or "9/15 to 9/30" or "between 9/15 and 9/30" or "from 9/15 to 9/30"
+        pattern2 = r'(?:between\s+|from\s+)?(\d+)/(\d+)\s+(?:and|to)\s+(\d+)/(\d+)'
+        match2 = re.search(pattern2, user_msg_lower)
+        if match2:
+            start_month = match2.group(1)
+            start_day = match2.group(2)
+            end_month = match2.group(3)
+            end_day = match2.group(4)
+            return f"from_{start_month}/{start_day}/{current_year}_to_{end_month}/{end_day}/{current_year}"
+        
+        # Pattern 3: "october 1 to october 3" or "from october 1 to october 3"
+        pattern3 = r'(?:from\s+)?october\s+(\d+)\s+to\s+october\s+(\d+)'
+        match3 = re.search(pattern3, user_msg_lower)
+        if match3:
+            start_day = match3.group(1)
+            end_day = match3.group(2)
+            return f"from_10/{start_day}/{current_year}_to_10/{end_day}/{current_year}"
+        
+        # Pattern 4: "jobs from M/D to M/D"
+        pattern4 = r'jobs\s+from\s+(\d+)/(\d+)\s+to\s+(\d+)/(\d+)'
+        match4 = re.search(pattern4, user_msg_lower)
+        if match4:
+            start_month = match4.group(1)
+            start_day = match4.group(2)
+            end_month = match4.group(3)
+            end_day = match4.group(4)
+            return f"from_{start_month}/{start_day}/{current_year}_to_{end_month}/{end_day}/{current_year}"
+        
+        # Default fallback - couldn't parse the date range
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"Could not parse custom date range from: {user_message}")
+        return "today"  # Fallback to today
 
 

@@ -111,7 +111,7 @@ class ChatService:
             # Step 0.6: Handle region status requests directly (bypass LLM for reliability)
             if self._is_region_status_request(user_message):
                 # Region status requests are not logged as they're lightweight operations
-                return await self._handle_region_status_request(user_info, db, region)
+                return await self._handle_region_status_request(user_info, db, region, user_message)
             
             # Step 0.7: Handle greeting messages directly (bypass LLM to avoid clarification)
             if self._is_greeting_message(user_message):
@@ -352,7 +352,8 @@ class ChatService:
                 return self._format_health_response(mcp_result, region)
                 
             elif tool_used == "region_status":
-                return self._format_region_status_response(mcp_result, region)
+                format_type = getattr(llm_result, 'filters', {}).get('format', 'full_status')
+                return self._format_region_status_response(mcp_result, region, format_type)
                 
             elif tool_used == "query_job_logs":
                 return self._format_job_logs_response(mcp_result, region)
@@ -390,11 +391,38 @@ class ChatService:
     def _is_confirmation_message(self, message: str) -> bool:
         """Check if message is a confirmation for archive/delete operations"""
         message_upper = message.upper().strip()
-        confirmation_patterns = [
-            'CONFIRM ARCHIVE', 'CONFIRM DELETE', 'YES', 'PROCEED', 'SURE', 'GO AHEAD', 'EXECUTE',
-            'CANCEL', 'ABORT', 'DONT', 'NO'
+        
+        # More specific confirmation patterns to avoid false matches
+        explicit_confirmations = [
+            'CONFIRM ARCHIVE', 'CONFIRM DELETE', 'CANCEL', 'ABORT'
         ]
-        return any(pattern in message_upper for pattern in confirmation_patterns)
+        
+        # Check for exact confirmation commands first
+        if any(pattern in message_upper for pattern in explicit_confirmations):
+            return True
+        
+        # Check for exact EXECUTE matches (not EXECUTED)
+        if message_upper == 'EXECUTE' or message_upper.startswith('EXECUTE '):
+            return True
+        
+        # Only match standalone confirmation words at start/end or as complete message
+        standalone_confirmations = ['YES', 'NO', 'PROCEED', 'SURE', 'GO AHEAD', 'DONT']
+        
+        # Check if message is exactly one of these confirmation words
+        if message_upper in standalone_confirmations:
+            return True
+            
+        # Check if message starts or ends with these confirmation words followed/preceded by punctuation
+        for pattern in standalone_confirmations:
+            if (message_upper.startswith(pattern + ' ') or 
+                message_upper.startswith(pattern + ',') or 
+                message_upper.startswith(pattern + '.') or
+                message_upper.endswith(' ' + pattern) or 
+                message_upper.endswith(',' + pattern) or 
+                message_upper.endswith('.' + pattern)):
+                return True
+                
+        return False
 
     def _is_general_stats_request(self, message: str) -> bool:
         """Check if message is asking for general table statistics"""
@@ -414,9 +442,31 @@ class ChatService:
             'which region', 'current region', 'region status', 'region connection',
             'connected region', 'what region', 'region info', 'show region',
             'region information', 'connection status', 'which region is connected',
-            'what region is connected', 'current region status', 'region details'
+            'what region is connected', 'current region status', 'region details',
+            'active region', 'what\'s the active region', 'whats the active region',
+            'total regions', 'how many regions', 'count of regions', 'number of regions',
+            'available regions', 'list regions', 'show all regions', 'all regions'
         ]
         return any(pattern in message_lower for pattern in region_patterns)
+
+    def _determine_region_format_type(self, user_message: str) -> str:
+        """Determine the format type for region response based on user message"""
+        if not user_message:
+            return "full_status"
+            
+        message_lower = user_message.lower().strip()
+        
+        # Check for specific question patterns
+        if any(pattern in message_lower for pattern in ['which region is connected', 'connected region']):
+            return "connected_only"
+        elif any(pattern in message_lower for pattern in ['total regions', 'how many regions', 'count of regions', 'number of regions']):
+            return "count_only"
+        elif any(pattern in message_lower for pattern in ['current region', 'what region', 'active region']) and 'status' not in message_lower:
+            return "current_only"
+        elif any(pattern in message_lower for pattern in ['available regions', 'list regions', 'show all regions', 'all regions']):
+            return "available_list"
+        else:
+            return "full_status"
 
     def _is_greeting_message(self, message: str) -> bool:
         """Check if message is a greeting/initialization message"""
@@ -1001,6 +1051,40 @@ class ChatService:
                     # Add table context information for better LLM understanding
                     if log.table_name:
                         conversation.append(f"[Context: Previous operation on table: {log.table_name}]")
+                    
+                    # Add job log context information
+                    if log.operation_type in ['QUERY_JOB_LOGS', 'GET_JOB_SUMMARY_STATS'] and log.filters_applied:
+                        job_context_parts = []
+                        filters = log.filters_applied
+                        
+                        if filters.get('job_types'):
+                            job_context_parts.append(f"job_types: {filters['job_types']}")
+                        if filters.get('status_filters'):
+                            job_context_parts.append(f"status: {filters['status_filters']}")
+                        if filters.get('table_filters'):
+                            job_context_parts.append(f"tables: {filters['table_filters']}")
+                        if filters.get('date_filters'):
+                            job_context_parts.append(f"date_range: {filters['date_filters']}")
+                        
+                        # Add specific filter information
+                        if filters.get('failed_only'):
+                            job_context_parts.append("status: FAILED")
+                        elif filters.get('successful_only'):
+                            job_context_parts.append("status: SUCCESS")
+                        elif filters.get('status'):
+                            job_context_parts.append(f"status: {filters['status']}")
+                        
+                        if filters.get('job_type'):
+                            job_context_parts.append(f"job_type: {filters['job_type']}")
+                        
+                        if filters.get('date_range'):
+                            job_context_parts.append(f"date_range: {filters['date_range']}")
+                        
+                        if job_context_parts:
+                            conversation.append(f"[Job Context: Previous job query with {', '.join(job_context_parts)}]")
+                        else:
+                            conversation.append(f"[Job Context: Previous job logs operation]")
+                            
                 if log.bot_response:
                     conversation.append(f"Assistant: {log.bot_response}")
             
@@ -1067,7 +1151,7 @@ class ChatService:
                 structured_content=self._create_error_structured_content(error_msg, region)
             )
 
-    async def _handle_region_status_request(self, user_info: dict, db: Session, region: str) -> ChatResponse:
+    async def _handle_region_status_request(self, user_info: dict, db: Session, region: str, user_message: str = "") -> ChatResponse:
         """Handle region connection status request directly"""
         try:
             from cloud_mcp.server import region_status
@@ -1075,8 +1159,11 @@ class ChatService:
             # Execute region status MCP tool
             mcp_result = await region_status()
             
-            # Format the response
-            return self._format_region_status_response(mcp_result, region)
+            # Determine format type based on user message
+            format_type = self._determine_region_format_type(user_message)
+            
+            # Format the response with the appropriate format
+            return self._format_region_status_response(mcp_result, region, format_type)
                 
         except Exception as e:
             logger.error(f"Error handling region status request: {e}")
@@ -1514,8 +1601,8 @@ class ChatService:
             context={"tool": "health_check"}
         )
 
-    def _format_region_status_response(self, mcp_result: dict, region: str) -> ChatResponse:
-        """Format region status response"""
+    def _format_region_status_response(self, mcp_result: dict, region: str, format_type: str = "full_status") -> ChatResponse:
+        """Format region status response with variable output based on user intent"""
         if not mcp_result.get("success"):
             error_msg = mcp_result.get("error", "Failed to get region status")
             response = f"Region Status Error\n\n{error_msg}"
@@ -1531,39 +1618,66 @@ class ChatService:
         connection_status = mcp_result.get("connection_status", {})
         connected_regions = mcp_result.get("connected_regions", [])
         
-        # Build response with natural sentence format
         total_regions = len(available_regions)
         connected_count = len(connected_regions)
         
-        response = f"Region Status Information\n\n"
-        
-        # Main summary sentence
-        if connected_count == 0:
-            response += f"There are **{total_regions} regions** available ({', '.join([r.upper() for r in available_regions])}), of which currently **none is connected**.\n\n"
-        elif connected_count == 1:
-            connected_region = connected_regions[0]
-            response += f"There are **{total_regions} regions** available ({', '.join([r.upper() for r in available_regions])}), of which currently **{connected_region.upper()}** is connected.\n\n"
+        # Variable response based on user intent
+        if format_type == "connected_only":
+            # User asked "Which region is connected?"
+            if connected_count == 0:
+                response = "No regions are currently connected."
+            elif connected_count == 1:
+                response = f"{connected_regions[0].upper()}"
+            else:
+                response = f"{', '.join([r.upper() for r in connected_regions])}"
+                
+        elif format_type == "count_only":
+            # User asked "Total regions" or "How many regions"
+            response = f"There are {total_regions} regions."
+            
+        elif format_type == "current_only":
+            # User asked "Current region" or "What region"
+            if current_region:
+                is_connected = connection_status.get(current_region, False)
+                connection_text = " (Connected)" if is_connected else " (Disconnected)"
+                response = f"{current_region.upper()}{connection_text}"
+            else:
+                response = f"No active region (using default: {default_region.upper()})"
+                
+        elif format_type == "available_list":
+            # User asked "Available regions" or "List regions"
+            response = f"Available regions: {', '.join([r.upper() for r in available_regions])}"
+            
         else:
-            connected_list = ', '.join([r.upper() for r in connected_regions])
-            response += f"There are **{total_regions} regions** available ({', '.join([r.upper() for r in available_regions])}), of which currently **{connected_list}** are connected.\n\n"
+            # Default full status (existing behavior)
+            response = f"Region Status Information\n\n"
+            
+            if connected_count == 0:
+                response += f"There are **{total_regions} regions** available ({', '.join([r.upper() for r in available_regions])}), of which currently **none is connected**.\n\n"
+            elif connected_count == 1:
+                connected_region = connected_regions[0]
+                response += f"There are **{total_regions} regions** available ({', '.join([r.upper() for r in available_regions])}), of which currently **{connected_region.upper()}** is connected.\n\n"
+            else:
+                connected_list = ', '.join([r.upper() for r in connected_regions])
+                response += f"There are **{total_regions} regions** available ({', '.join([r.upper() for r in available_regions])}), of which currently **{connected_list}** are connected.\n\n"
+            
+            if current_region:
+                is_connected = connection_status.get(current_region, False)
+                connection_text = "Connected" if is_connected else "Disconnected"
+                response += f"**Active Region:** {current_region.upper()} ({connection_text})\n"
+            else:
+                response += f"**Active Region:** None (using default: {default_region.upper()})\n"
+            
+            if default_region and default_region != current_region:
+                response += f"**Default Region:** {default_region.upper()}"
         
-        # Current region info
-        if current_region:
-            is_connected = connection_status.get(current_region, False)
-            connection_text = "Connected" if is_connected else "Disconnected"
-            response += f"**Active Region:** {current_region.upper()} ({connection_text})\n"
-        else:
-            response += f"**Active Region:** None (using default: {default_region.upper()})\n"
-        
-        # Default region
-        if default_region and default_region != current_region:
-            response += f"**Default Region:** {default_region.upper()}"
-        
-        # Structured content
+        # Create unified structured content for all region responses using LLM-generated content
         structured_content = {
             "type": "region_status_card",
-            "title": "Region Status",
-            "icon": "",
+            "title": "Region Information",
+            "content": response,  # Always use LLM-generated content
+            "format_type": format_type,
+            # Keep metadata for potential future use
             "current_region": current_region,
             "default_region": default_region,
             "available_regions": available_regions,
@@ -1574,12 +1688,7 @@ class ChatService:
                 "connected_count": connected_count,
                 "all_connected": connected_count == total_regions,
                 "none_connected": connected_count == 0
-            },
-            "details": [
-                f"Current Region: {current_region.upper() if current_region else 'None'}",
-                f"Connected Regions: {connected_count}/{total_regions}",
-                f"Available Regions: {', '.join([r.upper() for r in available_regions])}"
-            ]
+            }
         }
         
         return ChatResponse(
@@ -1590,7 +1699,8 @@ class ChatService:
                 "tool": "region_status",
                 "current_region": current_region,
                 "connected_count": connected_count,
-                "total_regions": total_regions
+                "total_regions": total_regions,
+                "format_type": format_type
             }
         )
 

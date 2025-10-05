@@ -566,7 +566,7 @@ async def _health_check() -> Dict[str, Any]:
 
 async def _query_job_logs(
     filters: Optional[Dict[str, Any]] = None,
-    limit: int = 100,
+    limit: int = 5,
     offset: int = 0,
     order_by: str = "started_at",
     order_direction: str = "desc"
@@ -663,12 +663,19 @@ async def _query_job_logs(
             # Check if detailed table format is requested
             show_table = (
                 (filters and filters.get('format') == 'table') or 
-                len(records) <= 5 or
                 any(keyword in str(filters).lower() for keyword in ['detail', 'table', 'full']) if filters else False
             )
             
-            # Always use table format if explicitly requested via format parameter
+            # Always use table format if explicitly requested via format parameter or by default
             if filters and filters.get('format') == 'table':
+                show_table = True
+            
+            # Default to table format for job logs unless explicitly requesting list format
+            if not filters or filters.get('format') != 'list':
+                show_table = True
+            
+            # Final safeguard: if format is not explicitly set to 'list', use table format
+            if not show_table and (not filters or 'format' not in filters):
                 show_table = True
             
             if show_table:  # Use table format when requested or for smaller result sets
@@ -1182,7 +1189,7 @@ async def mcp_health_check() -> Dict[str, Any]:
 @mcp.tool(name="query_job_logs")
 async def mcp_query_job_logs(
     filters: Optional[Dict[str, Any]] = None,
-    limit: int = 100,
+    limit: int = 5,
     offset: int = 0,
     order_by: str = "started_at",
     order_direction: str = "desc"
