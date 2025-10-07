@@ -64,7 +64,8 @@ class ChatService:
             region_service.set_current_region(region)
 
             # Only log operational commands, not conversational messages
-            should_log = self._should_log_operation(user_message)
+            # should_log = self._should_log_operation(user_message)
+            should_log = True
             chat_log = None
             
             if should_log:
@@ -167,7 +168,7 @@ class ChatService:
                             db.commit()
                         
                         # Format the response
-                        formatted_response = self._format_response_by_tool(llm_result, region, final_session_id)
+                        formatted_response = await self._format_response_by_tool(llm_result, region, final_session_id)
                         
                         # CRITICAL : Update ChatOpsLog with the formatted bot response so confirmation can find preview operations
                         if chat_log and formatted_response:
@@ -313,7 +314,7 @@ class ChatService:
                 structured_content=error_structured_content
             )
 
-    def _format_response_by_tool(self, llm_result, region: str, session_id: str = None) -> ChatResponse:
+    async def _format_response_by_tool(self, llm_result, region: str, session_id: str = None) -> ChatResponse:
         """Format response based on the MCP tool used by LLM"""
         try:
             mcp_result = llm_result.mcp_result
@@ -360,6 +361,9 @@ class ChatService:
                 
             elif tool_used == "get_job_summary_stats":
                 return self._format_job_summary_response(mcp_result, region)
+                
+            elif tool_used == "execute_sql_query":
+                return await self._format_sql_query_response(mcp_result, region, session_id)
                 
             else:
                 # Unknown or null tool - this should not happen with our new logic
@@ -1818,6 +1822,376 @@ class ChatService:
             response_type="job_statistics",
             structured_content=None
         )
+
+    async def _format_sql_query_response(self, mcp_result: dict, region: str, session_id: str = None) -> ChatResponse:
+        """Format SQL query execution response using LLM for intelligent analysis"""
+        if not mcp_result.get("success"):
+            error_msg = mcp_result.get("error", "SQL query execution failed")
+            generated_sql = mcp_result.get("generated_sql")
+            user_prompt = mcp_result.get("user_prompt", "")
+            
+            # User-friendly error response
+            response = f"❌ **Query Error** - {region.upper()} Region\n\n"
+            response += f"**Your Request:** {user_prompt}\n\n"
+            response += f"**Issue:** {error_msg}\n\n"
+            
+            if "Security violation" in error_msg:
+                response += "💡 **Tip:** I can only run safe SELECT queries to view data. Try asking to 'show' or 'find' information instead.\n\n"
+            elif "execution failed" in error_msg.lower():
+                response += "💡 **Tip:** Try rephrasing your request with simpler terms or check if the data exists.\n\n"
+            
+            response += "**What I can help with:**\n"
+            response += "• Show data from activities, transactions, or job logs\n"
+            response += "• Filter by specific criteria (dates, names, types)\n"
+            response += "• Count and group data by different fields\n"
+            response += "• Find records matching your conditions"
+            
+            structured_content = {
+                "type": "error_card", 
+                "title": "Query Error",
+                "region": region.upper(),
+                "error_message": error_msg,
+                "generated_sql": generated_sql,
+                "user_friendly_error": True,
+                "suggestions": [
+                    "Try rephrasing your query",
+                    "Use simpler query terms", 
+                    "Ask to 'show' or 'find' data instead",
+                    "Check if the data exists"
+                ],
+                "context": {
+                    "response_type": "sql_error",
+                    "timestamp": datetime.now().isoformat()
+                }
+            }
+            
+            return ChatResponse(
+                response=response,
+                response_type="error",
+                structured_content=structured_content,
+                tool_input={
+                    "tool_name": "execute_sql_query",
+                    "user_prompt": user_prompt,
+                    "generated_sql": generated_sql,
+                    "error": error_msg,
+                    "parameters": {
+                        "max_rows": 100,
+                        "query_type": "SELECT",
+                        "safety_enabled": True
+                    }
+                }
+            )
+        
+        # Successful query execution - now use LLM for intelligent response
+        data = mcp_result.get("data", [])
+        columns = mcp_result.get("columns", [])
+        row_count = mcp_result.get("row_count", 0)
+        generated_sql = mcp_result.get("generated_sql", "")
+        user_prompt = mcp_result.get("user_prompt", "")
+        
+        # Determine query type for structured content
+        query_type = self._determine_query_type(user_prompt, generated_sql)
+        
+        # Get conversation context for better LLM understanding
+        try:
+            from sqlalchemy.orm import Session
+            from database import get_db
+            
+            conversation_context = ""
+            if session_id:
+                db = next(get_db())
+                try:
+                    conversation_context = self._get_conversation_history(session_id, db, limit=3)
+                finally:
+                    db.close()
+            
+            # Use LLM to generate intelligent response
+            llm_response = await self._generate_intelligent_sql_response(
+                user_prompt=user_prompt,
+                generated_sql=generated_sql,
+                query_results=data,
+                columns=columns,
+                row_count=row_count,
+                region=region,
+                conversation_context=conversation_context
+            )
+            
+            # Check if we got an intelligent LLM response
+            llm_generated = llm_response and llm_response.strip()
+            response = llm_response if llm_generated else self._create_fallback_sql_response(
+                user_prompt, data, columns, row_count, generated_sql, region
+            )
+            
+        except Exception as e:
+            logger.error(f"Error generating intelligent SQL response: {e}")
+            # Fallback to original logic if LLM fails
+            llm_generated = False
+            response = self._create_fallback_sql_response(
+                user_prompt, data, columns, row_count, generated_sql, region
+            )
+        
+        # Create appropriate structured content based on response type
+        if llm_generated:
+            # For LLM-generated intelligent analysis
+            structured_content = {
+                "type": "analysis_card",
+                "title": "Intelligent Analysis",
+                "region": region.upper(),
+                "user_prompt": user_prompt,
+                "analysis_content": response,
+                "query_info": {
+                    "generated_sql": generated_sql,
+                    "row_count": row_count,
+                    "columns": columns,
+                    "query_type": query_type
+                },
+                "data_summary": {
+                    "total_records": row_count,
+                    "has_results": row_count > 0,
+                    "is_limited": row_count >= 100
+                },
+                "context": {
+                    "response_type": "intelligent_analysis",
+                    "timestamp": datetime.now().isoformat(),
+                    "tool_used": "execute_sql_query",
+                    "llm_generated": True
+                }
+            }
+            response_type = "analysis"
+        else:
+            # For fallback technical responses
+            structured_content = {
+                "type": "sql_query_results",
+                "title": "Query Results",
+                "region": region.upper(),
+                "user_prompt": user_prompt,
+                "generated_sql": generated_sql,
+                "columns": columns,
+                "data": data,
+                "row_count": row_count,
+                "has_results": row_count > 0,
+                "is_limited": row_count >= 100,
+                "query_type": query_type,
+                "user_friendly": True,
+                "summary": {
+                    "total_records": row_count,
+                    "columns_count": len(columns),
+                    "query_category": query_type,
+                    "has_preview": len(data) > 0,
+                    "is_count_query": "count" in user_prompt.lower() or "COUNT(" in generated_sql.upper()
+                },
+                "context": {
+                    "response_type": "sql_results",
+                    "timestamp": datetime.now().isoformat(),
+                    "tool_used": "execute_sql_query",
+                    "llm_generated": False
+                }
+            }
+            response_type = "sql_results"
+        
+        return ChatResponse(
+            response=response,
+            response_type=response_type,
+            structured_content=structured_content,
+            tool_input={
+                "tool_name": "execute_sql_query",
+                "user_prompt": user_prompt,
+                "generated_sql": generated_sql,
+                "parameters": {
+                    "max_rows": 100,
+                    "query_type": "SELECT",
+                    "safety_enabled": True,
+                    "row_count": row_count,
+                    "has_results": row_count > 0
+                }
+            },
+            context={
+                "tool": "execute_sql_query",
+                "region": region,
+                "row_count": row_count,
+                "has_results": row_count > 0,
+                "user_prompt": user_prompt,
+                "generated_sql": generated_sql,
+                "query_type": query_type
+            }
+        )
+
+    def _determine_query_type(self, user_prompt: str, generated_sql: str) -> str:
+        """Determine the type of query for user-friendly messaging"""
+        user_prompt_lower = user_prompt.lower()
+        sql_upper = generated_sql.upper()
+        
+        # Determine query category - check both main and archive tables
+        if "job" in user_prompt_lower or "job_logs" in sql_upper:
+            return "jobs"
+        elif "activit" in user_prompt_lower or "dsiactivities" in sql_upper or "dsiactivitiesarchive" in sql_upper:
+            return "activities"
+        elif "transaction" in user_prompt_lower or "dsitransactionlog" in sql_upper or "dsitransactionlogarchive" in sql_upper:
+            return "transactions"
+        elif "count" in user_prompt_lower or "COUNT(" in sql_upper:
+            return "count"
+        elif "GROUP BY" in sql_upper:
+            return "grouped"
+        elif "ORDER BY" in sql_upper:
+            return "sorted"
+        else:
+            return "general"
+
+    async def _generate_intelligent_sql_response(
+        self, 
+        user_prompt: str, 
+        generated_sql: str, 
+        query_results: list, 
+        columns: list, 
+        row_count: int,
+        region: str,
+        conversation_context: str = ""
+    ) -> str:
+        """Use LLM to generate intelligent, contextual response for SQL query results"""
+        try:
+            from services.llm_service import OpenAIService
+            
+            llm_service = OpenAIService()
+            
+            # Prepare data summary for LLM (limit data size to avoid token limits)
+            data_summary = self._prepare_data_summary_for_llm(query_results, columns, row_count)
+            
+            # Create comprehensive prompt for LLM
+            analysis_prompt = f"""
+            You are an intelligent database assistant analyzing query results for a cloud inventory management system.
+
+            User's Original Request: {user_prompt}
+
+            Query Results Summary:
+            - Total Records Found: {row_count:,}
+            - Data Fields: {', '.join(columns) if columns else 'None'}
+            - Region: {region.upper()}
+
+            Sample Data (first few records):
+            {data_summary}
+
+            Previous Conversation Context:
+            {conversation_context if conversation_context else 'No previous context'}
+
+            Instructions:
+            1. Provide a natural, conversational response about the query results
+            2. Highlight key insights from the data if any patterns are visible
+            3. If no results found, provide helpful suggestions for alternative queries
+            4. Keep the response concise but informative
+            5. Address the user's original intent directly
+            6. Suggest logical follow-up queries if relevant
+            7. DO NOT use any markdown formatting (no *, **, #, etc.)
+            8. DO NOT include or mention SQL queries in your response
+            9. Write in plain text only
+            10. Be conversational and friendly
+
+            Response Format:
+            Provide a direct, helpful response in plain text that answers the user's question based on the results. Be conversational and insightful without any technical jargon or SQL references.
+            """
+
+            # Get LLM response
+            llm_result = await llm_service.generate_response(
+                user_message=analysis_prompt,
+                user_id="system"
+            )
+            llm_response = llm_result.get("response", "") if llm_result else ""
+            
+            if llm_response and llm_response.strip():
+                return llm_response.strip()
+            else:
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error in LLM SQL response generation: {e}")
+            return None
+
+    def _prepare_data_summary_for_llm(self, query_results: list, columns: list, row_count: int) -> str:
+        """Prepare a concise data summary for LLM analysis"""
+        if row_count == 0:
+            return "No data returned from query"
+        
+        if not query_results or not columns:
+            return f"Query returned {row_count:,} records but no sample data available"
+        
+        # Show first 3-5 records with key columns
+        max_records = min(5, len(query_results))
+        max_columns = min(6, len(columns))  # Limit columns to avoid token overflow
+        
+        summary = []
+        for i, record in enumerate(query_results[:max_records]):
+            record_summary = []
+            for col in columns[:max_columns]:
+                value = record.get(col, "N/A")
+                # Truncate long values
+                if isinstance(value, str) and len(value) > 30:
+                    value = value[:27] + "..."
+                record_summary.append(f"{col}: {value}")
+            
+            summary.append(f"Record {i+1}: {', '.join(record_summary)}")
+        
+        if len(query_results) > max_records:
+            summary.append(f"... and {len(query_results) - max_records} more records")
+        
+        if len(columns) > max_columns:
+            remaining_cols = columns[max_columns:]
+            summary.append(f"Additional columns: {', '.join(remaining_cols[:3])}")
+            if len(remaining_cols) > 3:
+                summary.append(f"... and {len(remaining_cols) - 3} more columns")
+        
+        return "\n".join(summary)
+
+    def _create_fallback_sql_response(
+        self, 
+        user_prompt: str, 
+        data: list, 
+        columns: list, 
+        row_count: int, 
+        generated_sql: str, 
+        region: str
+    ) -> str:
+        """Create fallback response when LLM is unavailable"""
+        query_type = self._determine_query_type(user_prompt, generated_sql)
+        
+        response = f"✅ **Query Results** - {region.upper()} Region\n\n"
+        response += f"**Your Request:** {user_prompt}\n\n"
+        
+        if row_count > 0:
+            # Add summary based on query type
+            if "count" in user_prompt.lower() or "COUNT(" in generated_sql.upper():
+                response += f"📊 **Summary:** Found **{row_count:,}** result(s)\n\n"
+            elif "job" in user_prompt.lower():
+                response += f"🔧 **Job Results:** Found **{row_count:,}** job record(s)\n\n"
+            elif "activit" in user_prompt.lower():
+                response += f"📋 **Activity Results:** Found **{row_count:,}** activity record(s)\n\n"
+            elif "transaction" in user_prompt.lower():
+                response += f"💼 **Transaction Results:** Found **{row_count:,}** transaction record(s)\n\n"
+            else:
+                response += f"📄 **Data Results:** Found **{row_count:,}** record(s)\n\n"
+            
+            # Add sample data preview
+            if len(data) > 0:
+                response += f"**Sample Data Preview:**\n"
+                sample_record = data[0]
+                preview_count = min(3, len(columns))
+                for i, col in enumerate(columns[:preview_count]):
+                    value = sample_record.get(col, "N/A")
+                    if isinstance(value, str) and len(value) > 50:
+                        value = value[:47] + "..."
+                    response += f"• **{col}:** {value}\n"
+                
+                if len(columns) > preview_count:
+                    response += f"• ... and {len(columns) - preview_count} more field(s)\n"
+                response += f"\n"
+            
+            response += f"📋 **View complete results in the data table below.**\n"
+            
+            if row_count >= 100:
+                response += f"\n⚠️ **Note:** Results limited to 100 rows for performance."
+        else:
+            response += f"🔍 **No Results Found**\n\n"
+            response += f"The query didn't return any matching records. Try broadening your search criteria or checking if the data exists."
+        
+        return response
 
     def _create_welcome_response(self, user_id: str, user_role: str, region: str) -> ChatResponse:
         """Create a welcome card response for greeting messages"""

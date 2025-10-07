@@ -22,6 +22,9 @@ class ChatResponse(BaseModel):
     
     # New structured content fields
     structured_content: Optional[Dict[str, Any]] = None  # For rich content rendering
+    
+    # Tool input parameters for advanced operations
+    tool_input: Optional[Dict[str, Any]] = None  # For tool-specific input parameters
 
 # Authentication schemas
 class LoginRequest(BaseModel):

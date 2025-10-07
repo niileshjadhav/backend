@@ -253,32 +253,48 @@ class OpenAIService:
             5. region_status - For region connection status and current region info
             6. query_job_logs - For job execution history, logs, status
             7. get_job_summary_stats - For job performance metrics, success rates
+            8. execute_sql_query - For custom SQL queries using natural language (when no other tools match)
 
             CRITICAL ANALYSIS RULES:
 
-            1. JOB QUERIES (HIGHEST PRIORITY):
-            - Any mention of "job", "jobs", "job logs" → Use job tools
-            - Job details/logs: "show jobs", "recent jobs", "failed jobs" → query_job_logs
-            - Job statistics: "count of jobs", "job summary" → get_job_summary_stats
-            - "last job" → {{"limit": 1, "format": "table"}} (NO status filter unless specified)
-            - "last successful job" → {{"status": "SUCCESS", "limit": 1, "format": "table"}}
-            - "show jobs" → {{"limit": 5, "format": "table"}}
-            - "successful jobs from last week" → {{"status": "SUCCESS", "date_range": "last_7_days", "format": "table"}}
-            - "failed jobs" → {{"status": "FAILED", "format": "table"}}
+            1. JOB QUERIES (EXACT MATCHES ONLY):
+            - EXACT phrases: "show jobs", "list jobs", "recent jobs", "job logs" → query_job_logs
+            - EXACT phrases: "job statistics", "job summary", "job stats" → get_job_summary_stats
+            - EXACT phrases: "last job", "latest job" → query_job_logs {{"limit": 1}}
+            - EXACT phrases: "failed jobs", "successful jobs" → query_job_logs with status filter
+            - Must contain EXACT job terminology, not just "job" keyword
             - "archive jobs" = JOB LOGS about archive operations, NOT archived data
+            - ANALYSIS/REASONING queries about jobs → execute_sql_query (e.g., "analyse job fail", "why jobs fail", "job failure reasons")
 
-            2. DATA QUERIES:
-            - "count", "show", "list", "statistics" about records → get_table_stats
-            - "count activities" → get_table_stats dsiactivities {{}}
-            - "archived transactions" → get_table_stats dsitransactionlogarchive {{}}
-            - Main vs Archive: Use archive tables only when "archive"/"archived" explicitly mentioned
+            2. SIMPLE DATA QUERIES (COUNTING/STATS WITH DATE FILTERS):
+            - EXACT phrases: "count activities", "activities count", "total activities" → get_table_stats dsiactivities
+            - EXACT phrases: "count transactions", "transactions count", "total transactions" → get_table_stats dsitransactionlog
+            - EXACT phrases: "table statistics", "database statistics", "show table stats" → get_table_stats
+            - DATE FILTERED COUNTING: "activities older than X days/months/years" → get_table_stats dsiactivities with date_filter
+            - DATE FILTERED COUNTING: "transactions older than X days/months/years" → get_table_stats dsitransactionlog with date_filter
+            - DATE FILTERED COUNTING: "activities from yesterday/last week/last month" → get_table_stats dsiactivities with date_filter
+            - DATE FILTERED COUNTING: "transactions from yesterday/last week/last month" → get_table_stats dsitransactionlog with date_filter
+            - Simple counting with basic date filters → get_table_stats
+            - Complex queries with multiple conditions, JOIN operations, or analysis → execute_sql_query
 
-            3. OPERATIONS:
-            - "archive" with records/activities/transactions → archive_records
-            - "delete" with archived data → delete_archived_records
+            3. OPERATIONS (EXACT ACTION PHRASES ONLY):
+            - EXACT phrases: "archive records", "archive old data", "start archive" → archive_records
+            - EXACT phrases: "delete archived records", "delete old data" → delete_archived_records
+            - Must be clear operational intent, not just containing "archive" or "delete"
 
-            4. REGION QUERIES:
-            - "region", "connected", "current region" → region_status
+            4. REGION QUERIES (EXACT PHRASES ONLY):
+            - EXACT phrases: "region status", "current region", "which region", "region info" → region_status
+            - Must be specifically about region/connection status
+
+            5. CUSTOM SQL QUERIES (COMPLEX CONDITIONS ONLY):
+            - Complex WHERE conditions with multiple criteria → execute_sql_query
+            - Queries with specific field matching (e.g., ActivityType = 'Event') → execute_sql_query
+            - JOIN operations or multi-table queries → execute_sql_query
+            - ANALYSIS queries (why, analyse, reason, cause) → execute_sql_query
+            - "show activities where ActivityType is Event", "find records with...", "activities by server" → execute_sql_query
+            - "list transactions where...", "get data with specific criteria", "filter by multiple conditions" → execute_sql_query
+            - "analyse job fail", "why jobs fail", "job failure reasons" → execute_sql_query
+            - Queries not matching simple counting/stats patterns above → execute_sql_query
 
             CONTEXT HANDLING (CRITICAL):
             - PRESERVE context from previous queries for follow-up requests
@@ -303,10 +319,21 @@ class OpenAIService:
             - Vague requests without context → CLARIFY_[TYPE]_NEEDED
 
             RESPONSE FORMAT EXAMPLES:
+            "count activities" → MCP_TOOL: get_table_stats dsiactivities {{}}
+            "activities older than 10 days" → MCP_TOOL: get_table_stats dsiactivities {{"date_filter": "older_than_10_days"}}
             "count activities older than 12 months" → MCP_TOOL: get_table_stats dsiactivities {{"date_filter": "older_than_12_months"}}
+            "transactions from yesterday" → MCP_TOOL: get_table_stats dsitransactionlog {{"date_filter": "yesterday"}}
+            "count jobs" → MCP_TOOL: get_table_stats job_logs {{}}
+            "show jobs" → MCP_TOOL: query_job_logs {{"limit": 5, "format": "table"}}
             "last job" → MCP_TOOL: query_job_logs {{"limit": 1, "format": "table"}}
-            "failed jobs today" → MCP_TOOL: query_job_logs {{"status": "FAILED", "date_range": "today"}}
-            "archive old activities" → MCP_TOOL: archive_records dsiactivities {{}}
+            "failed jobs" → MCP_TOOL: query_job_logs {{"status": "FAILED", "format": "table"}}
+            "analyse the reason for recent job fail" → MCP_TOOL: execute_sql_query {{"user_prompt": "analyse the reason for recent job fail"}}
+            "why did jobs fail" → MCP_TOOL: execute_sql_query {{"user_prompt": "why did jobs fail"}}
+            "job failure analysis" → MCP_TOOL: execute_sql_query {{"user_prompt": "job failure analysis"}}
+            "activities by server" → MCP_TOOL: execute_sql_query {{"user_prompt": "activities by server"}}
+            "show activities where ActivityType is Event" → MCP_TOOL: execute_sql_query {{"user_prompt": "show activities where ActivityType is Event"}}
+            "find transactions by specific user" → MCP_TOOL: execute_sql_query {{"user_prompt": "find transactions by specific user"}}
+            "archive records" → MCP_TOOL: archive_records dsiactivities {{}}
             "region status" → MCP_TOOL: region_status {{}}
             "hello" → None
             "show data" (no context) → CLARIFY_TABLE_NEEDED
@@ -398,7 +425,7 @@ class OpenAIService:
             
             # Parse the MCP_TOOL line: "MCP_TOOL: [tool_name] [table_name] [filters_json]"
             # Handle tools that don't need table names specially to avoid JSON parsing issues
-            tools_without_tables = ["health_check", "region_status", "query_job_logs", "get_job_summary_stats"]
+            tools_without_tables = ["health_check", "region_status", "query_job_logs", "get_job_summary_stats", "execute_sql_query"]
             
             cleaned_line = mcp_line.replace("MCP_TOOL:", "").strip()
             parts = cleaned_line.split(" ", 1)
@@ -420,7 +447,7 @@ class OpenAIService:
                     table_name = ""
             
             # Validate tool name is not empty and is valid
-            valid_tools = ["get_table_stats", "archive_records", "delete_archived_records", "health_check", "region_status", "query_job_logs", "get_job_summary_stats"]
+            valid_tools = ["get_table_stats", "archive_records", "delete_archived_records", "health_check", "region_status", "query_job_logs", "get_job_summary_stats", "execute_sql_query"]
             if not tool_name:
                 logger.error(f"Empty tool name in MCP_TOOL line: '{mcp_line}'. Original message: '{original_message}'")
                 return None
@@ -552,6 +579,10 @@ class OpenAIService:
             elif tool_name == "get_job_summary_stats":
                 from cloud_mcp.server import _get_job_summary_stats
                 mcp_result = await _get_job_summary_stats(filters)
+            elif tool_name == "execute_sql_query":
+                from cloud_mcp.server import _execute_sql_query
+                user_prompt = filters.get("user_prompt", "") if filters else ""
+                mcp_result = await _execute_sql_query(user_prompt, filters)
             else:
                 logger.warning(f"Unknown MCP tool or missing table: tool={tool_name}, table={table_name}")
             
@@ -580,29 +611,25 @@ class OpenAIService:
             return None
 
     def _is_job_logs_request(self, message: str) -> bool:
-        """Check if message is requesting job logs/execution information"""
+        """Check if message is requesting job logs/execution information - EXACT MATCHES ONLY"""
         message_lower = message.lower().strip()
         
-        # Job execution patterns
-        job_execution_patterns = [
-            'last job', 'latest job', 'most recent job', 'recent job',
-            'last job executed', 'latest job executed', 'most recent job executed',
-            'last executed job', 'recent executed job', 'show job', 'job logs',
-            'job history', 'job status', 'job execution', 'executed job',
-            'show jobs', 'recent jobs', 'job statistics', 'job summary',
-            'archive jobs', 'delete jobs', 'failed jobs', 'successful jobs',
-            'jobs from', 'jobs today', 'jobs yesterday', 'all jobs', 'get jobs',
-            'jobs between', 'list jobs', 'get all jobs', 'display jobs',
-            'jobs executed', 'jobs were executed', 'jobs have run',
-            'jobs ran', 'what jobs', 'which jobs', 'jobs from last',
-            'last job archived', 'job archived', 'archived job',
-            'last job deleted', 'job deleted', 'deleted job'
+        # EXACT job execution patterns only - very restrictive
+        exact_job_patterns = [
+            'show jobs', 'list jobs', 'job logs', 'recent jobs',
+            'last job', 'latest job', 'job statistics', 'job summary',
+            'failed jobs', 'successful jobs', 'job status'
         ]
         
-        return any(pattern in message_lower for pattern in job_execution_patterns)
+        # Check if message exactly matches or starts with these patterns
+        for pattern in exact_job_patterns:
+            if message_lower == pattern or message_lower.startswith(pattern + ' '):
+                return True
+        
+        return False
 
     def _is_archive_request(self, message: str) -> bool:
-        """Check if message is requesting an archive operation using semantic analysis"""
+        """Check if message is requesting an archive operation - EXACT OPERATIONAL PHRASES ONLY"""
         message_lower = message.lower().strip()
         
         # Check for policy/explanation questions first (these should not be archive operations)
@@ -615,51 +642,39 @@ class OpenAIService:
         if any(indicator in message_lower for indicator in explanation_indicators) and 'archive' in message_lower:
             return False
         
-        # Use semantic understanding - look for action-oriented language patterns
-        # that suggest actual archive operations rather than just mentions
-        action_patterns = [
-            ('archive', ['data', 'records', 'activities', 'transactions', 'old', 'them', 'those']),
-            ('move', ['archive', 'old']),
-            ('start', ['archive']),
-            ('run', ['archive'])
+        # EXACT operational archive phrases only - very restrictive
+        exact_archive_patterns = [
+            'archive records', 'archive old data', 'start archive',
+            'archive activities', 'archive transactions', 'archive old records'
         ]
         
-        for action, objects in action_patterns:
-            if action in message_lower:
-                # Check if any object words appear near the action
-                if any(obj in message_lower for obj in objects):
-                    return True
-                # Or if it's a simple direct command like "archive"
-                if len(message_lower.split()) <= 3 and action == message_lower.strip():
-                    return True
+        # Check if message exactly matches these operational patterns
+        for pattern in exact_archive_patterns:
+            if pattern in message_lower:
+                return True
         
         return False
 
     def _is_stats_request(self, message: str) -> bool:
-        """Check if message is requesting statistics/counts using semantic analysis"""
+        """Check if message is requesting simple statistics/counts - VERY RESTRICTIVE"""
         message_lower = message.lower().strip()
         
-        # Look for information-seeking patterns rather than just keywords
-        query_patterns = [
-            # Direct information requests
-            'show', 'display', 'list', 'view', 'overview',
-            # Counting requests  
-            'count', 'how many', 'number of',
-            # Statistical requests
-            'statistics', 'stats', 'summary',
-            # Question patterns
-            'what are', 'what is', 'how much',
-            # Job execution patterns (implicit queries)
-            'last', 'latest', 'most recent', 'recent'
+        # EXACT simple counting patterns only - no filtering or conditions
+        exact_simple_patterns = [
+            'count activities', 'activities count', 'total activities',
+            'count transactions', 'transactions count', 'total transactions',
+            'table statistics', 'database statistics', 'show table stats',
+            'database overview', 'table summary'
         ]
         
-        # Check for database-related objects that suggest data queries
-        data_objects = [
-            'activities', 'transactions', 'records', 'data', 'logs',
-            'archive', 'archived', 'table', 'database', 'job', 'jobs'
-        ]
+        # Check for exact matches only
+        for pattern in exact_simple_patterns:
+            if pattern in message_lower:
+                # Make sure it doesn't have WHERE conditions or complex filtering
+                if not any(condition in message_lower for condition in ['where', 'by', 'from', 'with', 'older', 'newer', 'between', 'like', 'containing']):
+                    return True
         
-        # Special patterns for database overview
+        # Special patterns for database overview (these are simple stats)
         overview_patterns = [
             'overview of all database tables',
             'overview of database tables',
@@ -667,27 +682,10 @@ class OpenAIService:
             'database overview'
         ]
         
-        # Check for overview patterns first
         if any(pattern in message_lower for pattern in overview_patterns):
             return True
         
-        # More intelligent detection: look for query patterns combined with data objects
-        has_query_pattern = any(pattern in message_lower for pattern in query_patterns)
-        has_data_object = any(obj in message_lower for obj in data_objects)
-        
-        # Also detect simple contextual references that might be stats requests
-        contextual_patterns = ['them', 'those', 'it', 'that data', 'total', 'in total']
-        has_contextual_ref = any(pattern in message_lower for pattern in contextual_patterns)
-        
-        # Special handling for job execution patterns
-        job_execution_patterns = [
-            'last job', 'latest job', 'most recent job', 'recent job',
-            'last job executed', 'latest job executed', 'most recent job executed',
-            'last executed job', 'recent executed job'
-        ]
-        is_job_execution_query = any(pattern in message_lower for pattern in job_execution_patterns)
-        
-        return (has_query_pattern and has_data_object) or (has_query_pattern and has_contextual_ref) or is_job_execution_query
+        return False
 
     async def _create_fallback_archive_operation(self, user_message: str, conversation_context: str = None) -> Any:
         """Create fallback archive operation with separate table and filter context handling"""

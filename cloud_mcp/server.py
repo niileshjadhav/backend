@@ -1149,6 +1149,227 @@ async def _execute_confirmed_delete(
             "error": str(e)
         }
 
+async def _execute_sql_query(
+    user_prompt: str,
+    filters: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """Execute SQL queries based on natural language prompts when no other tools match"""
+    try:
+        from services.llm_service import OpenAIService
+        from sqlalchemy import text
+        import re
+        
+        # Initialize LLM service for SQL generation
+        llm_service = OpenAIService()
+        
+        # Enhanced prompt for SQL generation with safety constraints
+        sql_generation_prompt = f"""
+        You are a SQL query generator for a Cloud Inventory database. Convert the following natural language request into a safe SQL query.
+
+        User Request: "{user_prompt}"
+
+        AVAILABLE TABLES AND SCHEMAS:
+        
+        1. job_logs (Job execution logs) - USE FOR QUERIES ABOUT "JOBS":
+        - id (bigint): Unique identifier
+        - schema_name (string): Schema name
+        - job_type (string): Job type (DELETE/ARCHIVE/OTHER)
+        - table_name (string): Table affected
+        - status (string): Job status (IN_PROGRESS/SUCCESS/FAILED)
+        - reason (text): Success message or failure reason
+        - records_affected (int): Number of rows affected
+        - started_at (datetime): When job started (format: YYYY-MM-DD HH:MM:SS)
+        - finished_at (datetime): When job finished (format: YYYY-MM-DD HH:MM:SS)
+
+        2. dsiactivities (Main activity logs) - USE FOR QUERIES ABOUT "ACTIVITIES":
+        - SequenceID (int): Unique identifier
+        - ActivityID (string): Unique activity ID  
+        - ActivityType (string): Type of activity
+        - AgentName (string): Name of the agent
+        - PostedTime (datetime): When activity posted (format: YYYYMMDDHHMMSS)
+        - PostedTimeUTC (datetime): When activity posted UTC (format: YYYYMMDDHHMMSS)
+        - MethodName (string): Method invoked
+        - ServerName (string): Server involved
+        - InstanceID (string): Instance ID
+        - EventID (string): Event ID
+
+        3. dsitransactionlog (Main transaction logs) - USE FOR QUERIES ABOUT "TRANSACTIONS":
+        - RecordID (int): Unique identifier
+        - RecordStatus (string): Record status
+        - ProcessMethod (string): Process method
+        - TransactionType (string): Transaction type
+        - ServerName (string): Server name
+        - DeviceID (string): Device identifier
+        - UserID (string): User identifier
+        - DeviceLocalTime (string): Device local time (format: YYYYMMDDHHMMSS)
+        - DeviceUTCTime (string): Device UTC time (format: YYYYMMDDHHMMSS)
+        - WhenReceived (string): When received (format: YYYYMMDDHHMMSS)
+        - WhenProcessed (string): When processed (format: YYYYMMDDHHMMSS)
+        - ErrorsOut (TEXT): Error information and messages
+        - PromotionLevelID (string): Promotion level ID
+        - EnvironmentID (string): Environment ID
+
+        4. dsiactivitiesarchive (Archived activity logs): Same schema as dsiactivities
+        5. dsitransactionlogarchive (Archived transaction logs): Same schema as dsitransactionlog
+
+        STRICT SECURITY RULES:
+        1. ONLY SELECT queries are allowed - NO INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, CREATE
+        2. Limit results to maximum 100 rows with "LIMIT 100"
+        3. Use proper SQL Server/PostgreSQL syntax
+        4. Date formats in activities/transaction tables are YYYYMMDDHHMMSS strings
+        5. Date formats in job_logs table are standard datetime: YYYY-MM-DD HH:MM:SS
+        6. For date comparisons on activities/transactions: use string comparison like PostedTime > '20250101000000'
+        7. For date comparisons on job_logs: use datetime functions like started_at >= '2025-09-01 00:00:00'
+        8. Include relevant column names in SELECT, don't use SELECT *
+        9. Use appropriate WHERE clauses for filtering
+        10. If query involves counting, use COUNT() function
+        11. Order results by relevant columns (usually date columns DESC for recent first)
+        12. For "last month" queries: calculate proper date ranges for the specific table format
+
+        CRITICAL TABLE SELECTION RULES:
+        - If query mentions "job", "jobs", "job execution", "job status" → USE job_logs table
+        - If query mentions "activity", "activities" → USE dsiactivities table  
+        - If query mentions "transaction", "transactions", "dsitransaction" → USE dsitransactionlog table
+        - If query mentions "archived" → USE appropriate archive table
+        - For date filters on job_logs: use started_at or finished_at columns
+        - For date filters on activities: use PostedTime column
+        - For date filters on transactions: use WhenReceived column
+        
+        TABLE NAME MAPPING:
+        - "dsitransaction table" → dsitransactionlog
+        - "transaction table" → dsitransactionlog  
+        - "activity table" → dsiactivities
+        - "job table" → job_logs
+
+        EXAMPLE QUERIES:
+        - "Show recent activities" → SELECT SequenceID, ActivityID, ActivityType, AgentName, PostedTime FROM dsiactivities ORDER BY PostedTime DESC LIMIT 10
+        - "Count activities by type" → SELECT ActivityType, COUNT(*) as activity_count FROM dsiactivities GROUP BY ActivityType ORDER BY activity_count DESC LIMIT 100
+        - "Find failed jobs" → SELECT id, job_type, table_name, reason, started_at FROM job_logs WHERE status = 'FAILED' ORDER BY started_at DESC LIMIT 20
+        - "Jobs from last month" → SELECT id, job_type, table_name, status, started_at FROM job_logs WHERE started_at >= DATE_SUB(CURDATE(), INTERVAL 1 MONTH) ORDER BY started_at DESC LIMIT 100
+        - "Recent job executions" → SELECT id, job_type, status, records_affected, started_at FROM job_logs ORDER BY started_at DESC LIMIT 100
+        - "Analyze errors in transactions" → SELECT RecordID, RecordStatus, ErrorsOut, ServerName, WhenReceived FROM dsitransactionlog WHERE ErrorsOut IS NOT NULL AND ErrorsOut != '' ORDER BY WhenReceived DESC LIMIT 50
+        - "Show transaction errors" → SELECT RecordID, DeviceID, UserID, ErrorsOut FROM dsitransactionlog WHERE ErrorsOut IS NOT NULL ORDER BY RecordID DESC LIMIT 100
+
+        RESPONSE FORMAT:
+        Return ONLY the SQL query, nothing else. No explanations, no code blocks, just the raw SQL query.
+        """
+        
+        # Generate SQL query using LLM
+        try:
+            llm_response = await llm_service.generate_response(
+                user_message=sql_generation_prompt,
+                user_id="system"
+            )
+            
+            generated_sql = llm_response.get("response", "").strip()
+            
+            # Clean up the SQL (remove code block markers if any)
+            generated_sql = re.sub(r'^```sql\s*', '', generated_sql, flags=re.MULTILINE | re.IGNORECASE)
+            generated_sql = re.sub(r'^```\s*', '', generated_sql, flags=re.MULTILINE)
+            generated_sql = re.sub(r'\s*```$', '', generated_sql, flags=re.MULTILINE)
+            generated_sql = generated_sql.strip()
+            
+            if not generated_sql:
+                return {
+                    "success": False,
+                    "error": "Could not generate SQL query from the prompt",
+                    "generated_sql": None
+                }
+            
+        except Exception as e:
+            logger.error(f"Error generating SQL query: {e}")
+            return {
+                "success": False,
+                "error": f"Failed to generate SQL query: {str(e)}",
+                "generated_sql": None
+            }
+        
+        # Validate SQL query for security
+        sql_upper = generated_sql.upper().strip()
+        
+        # Check for forbidden operations
+        forbidden_keywords = [
+            'INSERT', 'UPDATE', 'DELETE', 'DROP', 'ALTER', 'TRUNCATE', 'CREATE',
+            'EXEC', 'EXECUTE', 'SP_', 'XP_', 'MERGE', 'BULK', 'OPENROWSET'
+        ]
+        
+        for keyword in forbidden_keywords:
+            if keyword in sql_upper:
+                return {
+                    "success": False,
+                    "error": f"Security violation: {keyword} operations are not allowed. Only SELECT queries are permitted.",
+                    "generated_sql": generated_sql
+                }
+        
+        # Ensure it starts with SELECT
+        if not sql_upper.startswith('SELECT'):
+            return {
+                "success": False,
+                "error": "Security violation: Only SELECT queries are allowed.",
+                "generated_sql": generated_sql
+            }
+        
+        # Add LIMIT if not present for safety
+        if 'LIMIT' not in sql_upper and 'TOP' not in sql_upper:
+            generated_sql += " LIMIT 100"
+        
+        # Execute the SQL query
+        db_gen = get_db()
+        db = next(db_gen)
+        
+        try:
+            # Execute the query
+            result = db.execute(text(generated_sql))
+            
+            # Fetch results
+            rows = result.fetchall()
+            columns = result.keys()
+            
+            # Convert to list of dictionaries
+            data = []
+            for row in rows:
+                row_dict = {}
+                for i, column in enumerate(columns):
+                    value = row[i]
+                    # Format datetime values
+                    if isinstance(value, str) and len(value) == 14 and value.isdigit():
+                        # Format YYYYMMDDHHMMSS dates
+                        try:
+                            formatted_date = format_database_date(value)
+                            row_dict[column] = formatted_date
+                        except:
+                            row_dict[column] = value
+                    else:
+                        row_dict[column] = value
+                data.append(row_dict)
+            
+            return {
+                "success": True,
+                "generated_sql": generated_sql,
+                "columns": list(columns),
+                "data": data,
+                "row_count": len(data),
+                "user_prompt": user_prompt
+            }
+            
+        except Exception as e:
+            logger.error(f"Error executing SQL query: {e}")
+            return {
+                "success": False,
+                "error": f"SQL execution failed: {str(e)}",
+                "generated_sql": generated_sql
+            }
+        finally:
+            db.close()
+            
+    except Exception as e:
+        logger.error(f"Error in execute_sql_query: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "generated_sql": None
+        }
+
 # Register MCP tools that wrap the internal functions
 @mcp.tool(name="archive_records")
 async def mcp_archive_records(
@@ -1238,6 +1459,30 @@ async def mcp_get_job_summary_stats(
     """
     return await _get_job_summary_stats(filters)
 
+@mcp.tool(name="execute_sql_query")
+async def mcp_execute_sql_query(
+    user_prompt: str,
+    filters: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """Execute SQL queries based on natural language prompts when no other tools match
+    
+    This tool generates and executes safe SELECT-only SQL queries based on natural language input.
+    It can query activities, transactions, job logs, and their archive tables.
+    
+    Security features:
+    - Only SELECT queries are allowed
+    - Results are limited to 100 rows maximum
+    - Forbidden operations (INSERT, UPDATE, DELETE, etc.) are blocked
+    - Proper SQL injection protection
+    
+    Examples:
+    - "Show recent activities from last week"
+    - "Count transactions by server name"  
+    - "Find all failed jobs in the last 30 days"
+    - "Show activities where ActivityType contains 'Event'"
+    """
+    return await _execute_sql_query(user_prompt, filters)
+
 archive_records = _archive_records  
 delete_archived_records = _delete_archived_records
 get_table_stats = _get_table_stats
@@ -1247,6 +1492,7 @@ execute_confirmed_archive = _execute_confirmed_archive
 execute_confirmed_delete = _execute_confirmed_delete
 query_job_logs = _query_job_logs
 get_job_summary_stats = _get_job_summary_stats
+execute_sql_query = _execute_sql_query
 
 # Schema information for different tables
 activities_schema = {
