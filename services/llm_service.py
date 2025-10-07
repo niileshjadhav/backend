@@ -246,40 +246,20 @@ class OpenAIService:
             - dsitransactionlogarchive: Archived transaction logs (old records)
 
             Available MCP Tools:
-            1. get_table_stats - For data queries (counts, statistics, "show", "list")
-            2. archive_records - For archiving old records to archive tables
-            3. delete_archived_records - For deleting records from archive tables
             4. health_check - For system health/status checks
             5. region_status - For region connection status and current region info
-            6. query_job_logs - For job execution history, logs, status
-            7. get_job_summary_stats - For job performance metrics, success rates
             8. execute_sql_query - For custom SQL queries using natural language (when no other tools match)
 
             CRITICAL ANALYSIS RULES:
 
             1. JOB QUERIES (EXACT MATCHES ONLY):
-            - EXACT phrases: "show jobs", "list jobs", "recent jobs", "job logs" → query_job_logs
-            - EXACT phrases: "job statistics", "job summary", "job stats" → get_job_summary_stats
-            - EXACT phrases: "last job", "latest job" → query_job_logs {{"limit": 1}}
-            - EXACT phrases: "failed jobs", "successful jobs" → query_job_logs with status filter
             - Must contain EXACT job terminology, not just "job" keyword
             - "archive jobs" = JOB LOGS about archive operations, NOT archived data
             - ANALYSIS/REASONING queries about jobs → execute_sql_query (e.g., "analyse job fail", "why jobs fail", "job failure reasons")
 
-            2. SIMPLE DATA QUERIES (COUNTING/STATS WITH DATE FILTERS):
-            - EXACT phrases: "count activities", "activities count", "total activities" → get_table_stats dsiactivities
-            - EXACT phrases: "count transactions", "transactions count", "total transactions" → get_table_stats dsitransactionlog
-            - EXACT phrases: "table statistics", "database statistics", "show table stats" → get_table_stats
-            - DATE FILTERED COUNTING: "activities older than X days/months/years" → get_table_stats dsiactivities with date_filter
-            - DATE FILTERED COUNTING: "transactions older than X days/months/years" → get_table_stats dsitransactionlog with date_filter
-            - DATE FILTERED COUNTING: "activities from yesterday/last week/last month" → get_table_stats dsiactivities with date_filter
-            - DATE FILTERED COUNTING: "transactions from yesterday/last week/last month" → get_table_stats dsitransactionlog with date_filter
-            - Simple counting with basic date filters → get_table_stats
-            - Complex queries with multiple conditions, JOIN operations, or analysis → execute_sql_query
+        
 
             3. OPERATIONS (EXACT ACTION PHRASES ONLY):
-            - EXACT phrases: "archive records", "archive old data", "start archive" → archive_records
-            - EXACT phrases: "delete archived records", "delete old data" → delete_archived_records
             - Must be clear operational intent, not just containing "archive" or "delete"
 
             4. REGION QUERIES (EXACT PHRASES ONLY):
@@ -299,7 +279,6 @@ class OpenAIService:
             CONTEXT HANDLING (CRITICAL):
             - PRESERVE context from previous queries for follow-up requests
             - "archive them", "delete them", "count them" → Use EXACT table + filters from previous query
-            - Example: Previous "activities older than 30 days" → "archive them" = archive_records dsiactivities {{"date_filter": "older_than_30_days"}}
             - Archive context preservation: After "archived X" query, follow-ups stay on archive table
 
             TABLE SELECTION LOGIC:
@@ -319,21 +298,13 @@ class OpenAIService:
             - Vague requests without context → CLARIFY_[TYPE]_NEEDED
 
             RESPONSE FORMAT EXAMPLES:
-            "count activities" → MCP_TOOL: get_table_stats dsiactivities {{}}
-            "activities older than 10 days" → MCP_TOOL: get_table_stats dsiactivities {{"date_filter": "older_than_10_days"}}
-            "count activities older than 12 months" → MCP_TOOL: get_table_stats dsiactivities {{"date_filter": "older_than_12_months"}}
-            "transactions from yesterday" → MCP_TOOL: get_table_stats dsitransactionlog {{"date_filter": "yesterday"}}
-            "count jobs" → MCP_TOOL: get_table_stats job_logs {{}}
-            "show jobs" → MCP_TOOL: query_job_logs {{"limit": 5, "format": "table"}}
-            "last job" → MCP_TOOL: query_job_logs {{"limit": 1, "format": "table"}}
-            "failed jobs" → MCP_TOOL: query_job_logs {{"status": "FAILED", "format": "table"}}
             "analyse the reason for recent job fail" → MCP_TOOL: execute_sql_query {{"user_prompt": "analyse the reason for recent job fail"}}
             "why did jobs fail" → MCP_TOOL: execute_sql_query {{"user_prompt": "why did jobs fail"}}
             "job failure analysis" → MCP_TOOL: execute_sql_query {{"user_prompt": "job failure analysis"}}
             "activities by server" → MCP_TOOL: execute_sql_query {{"user_prompt": "activities by server"}}
             "show activities where ActivityType is Event" → MCP_TOOL: execute_sql_query {{"user_prompt": "show activities where ActivityType is Event"}}
             "find transactions by specific user" → MCP_TOOL: execute_sql_query {{"user_prompt": "find transactions by specific user"}}
-            "archive records" → MCP_TOOL: archive_records dsiactivities {{}}
+           
             "region status" → MCP_TOOL: region_status {{}}
             "hello" → None
             "show data" (no context) → CLARIFY_TABLE_NEEDED

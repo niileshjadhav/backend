@@ -84,46 +84,48 @@ class ChatService:
                 db.refresh(chat_log)
             
             # Step 0: Handle confirmations for archive/delete operations (security critical)
-            if self._is_confirmation_message(user_message):
-                # For confirmations, ensure we have a chat_log
-                if not chat_log:
-                    chat_log = ChatOpsLog(
-                        session_id=final_session_id,
-                        user_message=user_message,
-                        region=region,
-                        user_id=final_user_id,
-                        user_role=user_role,
-                        message_type="command",
-                        operation_status="processing"
-                    )
-                    db.add(chat_log)
-                    db.commit()
-                    db.refresh(chat_log)
+            # if self._is_confirmation_message(user_message):
+            #     # For confirmations, ensure we have a chat_log
+            #     if not chat_log:
+            #         chat_log = ChatOpsLog(
+            #             session_id=final_session_id,
+            #             user_message=user_message,
+            #             region=region,
+            #             user_id=final_user_id,
+            #             user_role=user_role,
+            #             message_type="command",
+            #             operation_status="processing"
+            #         )
+            #         db.add(chat_log)
+            #         db.commit()
+            #         db.refresh(chat_log)
                 
-                return await self._handle_operation_confirmation(
-                    user_message, user_info, db, chat_log, region
-                )
+            #     return await self._handle_operation_confirmation(
+            #         user_message, user_info, db, chat_log, region
+            #     )
             
-            # Step 0.5: Handle general table statistics requests directly (bypass LLM for reliability)
+            # # # Step 0.5: Handle general table statistics requests directly (bypass LLM for reliability)
             if self._is_general_stats_request(user_message):
                 # General stats requests are not logged as they're lightweight operations
                 return await self._handle_general_stats_request(user_info, db, region)
             
-            # Step 0.6: Handle region status requests directly (bypass LLM for reliability)
-            if self._is_region_status_request(user_message):
-                # Region status requests are not logged as they're lightweight operations
-                return await self._handle_region_status_request(user_info, db, region, user_message)
+            # # Step 0.6: Handle region status requests directly (bypass LLM for reliability)
+            # if self._is_region_status_request(user_message):
+            #     # Region status requests are not logged as they're lightweight operations
+            #     return await self._handle_region_status_request(user_info, db, region, user_message)
             
-            # Step 0.7: Handle greeting messages directly (bypass LLM to avoid clarification)
-            if self._is_greeting_message(user_message):
-                # Greeting messages are not logged as they're conversational
-                user_id = user_info.get("username", "anonymous") if user_info else "anonymous"
-                user_role = user_info.get("role", "Monitor") if user_info else "Monitor"
-                return self._create_welcome_response(user_id, user_role, region)
+            # # Step 0.7: Handle greeting messages directly (bypass LLM to avoid clarification)
+            # if self._is_greeting_message(user_message):
+            #     # Greeting messages are not logged as they're conversational
+            #     user_id = user_info.get("username", "anonymous") if user_info else "anonymous"
+            #     user_role = user_info.get("role", "Monitor") if user_info else "Monitor"
+            #     return self._create_welcome_response(user_id, user_role, region)
             
             # Step 1: Let LLM decide everything in one intelligent call
             conversation_history = self._get_conversation_history(final_session_id, db)
-            
+            # agent = SQLAgent()
+            # answer = await agent.ask_question(conversation_history + "\n User propmt: " + user_message)
+            # print(answer)
             try:
                 llm_result = await self.llm_service.parse_with_enhanced_tools(
                     user_message=user_message, 
@@ -335,12 +337,12 @@ class ChatService:
                 )
             
             # Handle special case for general stats requests (all tables)
-            if tool_used == "get_table_stats" and not table_used:
+            if tool_used == "get_table_statssss" and not table_used:
                 # This is a general database statistics request
                 return self._format_general_stats_response(mcp_result, region)
             
             # Format response based on tool used
-            if tool_used == "get_table_stats":
+            if tool_used == "get_table_statssss":
                 return self._format_stats_response(mcp_result, table_used, region)
                 
             elif tool_used == "archive_records":
@@ -1249,7 +1251,7 @@ class ChatService:
             response=response,
             response_type="stats",
             structured_content=structured_content,
-            context={"count": filtered_count, "table": table_name, "tool": "get_table_stats", "has_filter": has_filter}
+            context={"count": filtered_count, "table": table_name, "tool": "get_table_statss", "has_filter": has_filter}
         )
 
     def _format_query_response(self, mcp_result: dict, table_name: str, region: str) -> ChatResponse:

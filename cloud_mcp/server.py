@@ -1309,9 +1309,8 @@ async def _execute_sql_query(
                 "generated_sql": generated_sql
             }
         
-        # Add LIMIT if not present for safety
         if 'LIMIT' not in sql_upper and 'TOP' not in sql_upper:
-            generated_sql += " LIMIT 100"
+            generated_sql = generated_sql.rstrip(';') + " LIMIT 100"
         
         # Execute the SQL query
         db_gen = get_db()
