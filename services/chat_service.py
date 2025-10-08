@@ -2141,7 +2141,7 @@ class ChatService:
             User's Original Request: {user_prompt}
 
             Query Results Summary:
-            - Total Records Found: {row_count:,}
+            - Result count: {row_count:,}
             - Data Fields: {', '.join(columns) if columns else 'None'}
             - Region: {region.upper()}
 
@@ -2154,7 +2154,7 @@ class ChatService:
             Instructions:
             1. Provide a natural, conversational response about the query results
             2. Highlight key insights from the data if any patterns are visible
-            3. If no results found, provide helpful suggestions for alternative queries
+            3. If no results returned, provide helpful suggestions for alternative queries
             4. Keep the response concise but informative
             5. Address the user's original intent directly
             6. Suggest logical follow-up queries if relevant
@@ -2162,9 +2162,11 @@ class ChatService:
             8. DO NOT include or mention SQL queries in your response
             9. Write in plain text only
             10. Be conversational and friendly
+            11. DO NOT say "found X records" or "there are X records" - instead focus on the actual data content
+            12. Avoid using phrases like "found", "discovered", "located" when referring to record counts
 
             Response Format:
-            Provide a direct, helpful response in plain text that answers the user's question based on the results. Be conversational and insightful without any technical jargon or SQL references.
+            Provide a direct, helpful response in plain text that answers the user's question based on the results. Focus on the actual data content and insights rather than mentioning record counts.
             """
 
             # Get LLM response
@@ -2186,10 +2188,10 @@ class ChatService:
     def _prepare_data_summary_for_llm(self, query_results: list, columns: list, row_count: int) -> str:
         """Prepare a concise data summary for LLM analysis"""
         if row_count == 0:
-            return "No data returned from query"
+            return "No data available"
         
         if not query_results or not columns:
-            return f"Query returned {row_count:,} records but no sample data available"
+            return f"Data count: {row_count:,} but no sample data available"
         
         # Show first 3-5 records with key columns
         max_records = min(5, len(query_results))
@@ -2208,7 +2210,7 @@ class ChatService:
             summary.append(f"Record {i+1}: {', '.join(record_summary)}")
         
         if len(query_results) > max_records:
-            summary.append(f"... and {len(query_results) - max_records} more records")
+            summary.append(f"... plus {len(query_results) - max_records} additional records")
         
         if len(columns) > max_columns:
             remaining_cols = columns[max_columns:]
