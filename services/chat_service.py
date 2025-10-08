@@ -45,7 +45,7 @@ class ChatService:
             # Use fallback values if not provided
             final_user_id = user_id or "anonymous"
             final_session_id = session_id or f"session_{datetime.now().timestamp()}"
-            user_role = user_info.get("role", "Monitor") if user_info else "Monitor"
+            user_role = user_info.get("role", "Admin") if user_info else "Admin"
             
             # REGION VALIDATION - Critical requirement
             region_service = get_region_service()
@@ -84,46 +84,48 @@ class ChatService:
                 db.refresh(chat_log)
             
             # Step 0: Handle confirmations for archive/delete operations (security critical)
-            if self._is_confirmation_message(user_message):
-                # For confirmations, ensure we have a chat_log
-                if not chat_log:
-                    chat_log = ChatOpsLog(
-                        session_id=final_session_id,
-                        user_message=user_message,
-                        region=region,
-                        user_id=final_user_id,
-                        user_role=user_role,
-                        message_type="command",
-                        operation_status="processing"
-                    )
-                    db.add(chat_log)
-                    db.commit()
-                    db.refresh(chat_log)
+            # if self._is_confirmation_message(user_message):
+            #     # For confirmations, ensure we have a chat_log
+            #     if not chat_log:
+            #         chat_log = ChatOpsLog(
+            #             session_id=final_session_id,
+            #             user_message=user_message,
+            #             region=region,
+            #             user_id=final_user_id,
+            #             user_role=user_role,
+            #             message_type="command",
+            #             operation_status="processing"
+            #         )
+            #         db.add(chat_log)
+            #         db.commit()
+            #         db.refresh(chat_log)
                 
-                return await self._handle_operation_confirmation(
-                    user_message, user_info, db, chat_log, region
-                )
+            #     return await self._handle_operation_confirmation(
+            #         user_message, user_info, db, chat_log, region
+            #     )
             
-            # Step 0.5: Handle general table statistics requests directly (bypass LLM for reliability)
+            # # # Step 0.5: Handle general table statistics requests directly (bypass LLM for reliability)
             if self._is_general_stats_request(user_message):
                 # General stats requests are not logged as they're lightweight operations
                 return await self._handle_general_stats_request(user_info, db, region)
             
-            # Step 0.6: Handle region status requests directly (bypass LLM for reliability)
+            # # Step 0.6: Handle region status requests directly (bypass LLM for reliability)
             if self._is_region_status_request(user_message):
                 # Region status requests are not logged as they're lightweight operations
                 return await self._handle_region_status_request(user_info, db, region, user_message)
             
-            # Step 0.7: Handle greeting messages directly (bypass LLM to avoid clarification)
-            if self._is_greeting_message(user_message):
-                # Greeting messages are not logged as they're conversational
-                user_id = user_info.get("username", "anonymous") if user_info else "anonymous"
-                user_role = user_info.get("role", "Monitor") if user_info else "Monitor"
-                return self._create_welcome_response(user_id, user_role, region)
+            # # Step 0.7: Handle greeting messages directly (bypass LLM to avoid clarification)
+            # if self._is_greeting_message(user_message):
+            #     # Greeting messages are not logged as they're conversational
+            #     user_id = user_info.get("username", "anonymous") if user_info else "anonymous"
+            #     user_role = user_info.get("role", "Admin") if user_info else "Admin"
+            #     return self._create_welcome_response(user_id, user_role, region)
             
             # Step 1: Let LLM decide everything in one intelligent call
             conversation_history = self._get_conversation_history(final_session_id, db)
-            
+            # agent = SQLAgent()
+            # answer = await agent.ask_question(conversation_history + "\n User propmt: " + user_message)
+            # print(answer)
             try:
                 llm_result = await self.llm_service.parse_with_enhanced_tools(
                     user_message=user_message, 
@@ -158,7 +160,16 @@ class ChatService:
                             chat_log.operation_type = getattr(llm_result, 'tool_used', None)
                             if chat_log.operation_type:
                                 chat_log.operation_type = chat_log.operation_type.upper()
-                            chat_log.table_name = getattr(llm_result, 'table_used', None)
+                            
+                            # Extract table name - handle SQL queries specially
+                            table_name = getattr(llm_result, 'table_used', None)
+                            if not table_name and chat_log.operation_type == 'EXECUTE_SQL_QUERY':
+                                # Extract table name from SQL query result
+                                mcp_result = getattr(llm_result, 'mcp_result', {})
+                                if mcp_result and mcp_result.get('generated_sql'):
+                                    table_name = self._extract_primary_table_from_sql(mcp_result['generated_sql'])
+                            
+                            chat_log.table_name = table_name
                             filters = getattr(llm_result, 'filters', None)
                             # Ensure filters is properly serializable as JSON
                             if filters is not None and isinstance(filters, dict):
@@ -268,8 +279,8 @@ class ChatService:
             conversation_history = self._get_conversation_history(current_session_id, db)
             
             user_id = user_info.get("username", "anonymous") if user_info else "anonymous"
-            user_role = user_info.get("role", "Monitor") if user_info else "Monitor"
-            
+            user_role = user_info.get("role", "Admin") if user_info else "Admin"
+
             # Check if this is a greeting/welcome message
             if self._is_greeting_message(user_message):
                 return self._create_welcome_response(user_id, user_role, region)
@@ -970,28 +981,94 @@ class ChatService:
             logger.error(f"Traceback: {traceback.format_exc()}")
             return None
 
-    def _extract_filters_from_message(self, message: str) -> dict:
-        """Extract date filters from user message"""
-        filters = {}
-        
+    def _extract_table_names_from_sql(self, sql_query: str) -> List[str]:
+        """Extract table names from SQL query"""
         import re
         
-        # Common date filter patterns
-        if "older than" in message:
-            # Extract "older than X days/months/years"
-            match = re.search(r'older than (\d+)\s*(day|month|year)', message)
-            if match:
-                number = match.group(1)
-                unit = match.group(2)
-                # Ensure plural form
-                if not unit.endswith('s'):
-                    unit += 's'
-                filters["date_filter"] = f"older_than_{number}_{unit}"
+        if not sql_query:
+            return []
         
-        # Handle simple archive/delete without specific dates
-        elif any(keyword in message for keyword in ['archive', 'delete']) and 'older than' not in message:
-            # Let the system apply default filters - don't set anything
-            pass
+        # Convert to uppercase for matching
+        sql_upper = sql_query.upper()
+        
+        tables = []
+        
+        # Extract all table names from FROM and JOIN clauses
+        from_pattern = r'\bFROM\s+([a-zA-Z_][a-zA-Z0-9_]*)'
+        join_pattern = r'\b(?:INNER\s+|LEFT\s+|RIGHT\s+|FULL\s+)?JOIN\s+([a-zA-Z_][a-zA-Z0-9_]*)'
+        
+        # Find all FROM matches
+        from_matches = re.findall(from_pattern, sql_upper)
+        tables.extend([match.lower() for match in from_matches])
+        
+        # Find all JOIN matches
+        join_matches = re.findall(join_pattern, sql_upper)
+        tables.extend([match.lower() for match in join_matches])
+        
+        # Filter to only include our known database tables
+        known_tables = [
+            'dsiactivities', 'dsitransactionlog', 'job_logs',
+            'dsiactivitiesarchive', 'dsitransactionlogarchive'
+        ]
+        
+        filtered_tables = []
+        for table in tables:
+            if table in known_tables:
+                filtered_tables.append(table)
+            # Also check if it contains our table names (for aliases like 'a' for activities)
+            elif any(known in table for known in known_tables):
+                filtered_tables.append(table)
+        
+        # Remove duplicates and return
+        return list(set(filtered_tables))
+    
+    def _extract_primary_table_from_sql(self, sql_query: str) -> str:
+        """Extract the primary table name from SQL query (FROM clause)"""
+        tables = self._extract_table_names_from_sql(sql_query)
+        if not tables:
+            return None
+            
+        # Prioritize main tables over archive tables
+        main_tables = [t for t in tables if not t.endswith('archive')]
+        if main_tables:
+            return main_tables[0]
+        
+        # Return first table if no main tables found
+        return tables[0] if tables else None
+
+    async def _extract_filters_from_message(self, message: str) -> dict:
+        """Extract date filters from user message using LLM"""
+        filters = {}
+        
+        try:
+            # Use LLM date filter for intelligent parsing
+            from services.llm_date_filter import LLMDateFilter
+            
+            llm_date_filter = LLMDateFilter()
+            date_result = await llm_date_filter.parse_date_filter(message)
+            
+            if date_result and date_result.get("success") and date_result.get("confidence", 0) >= 0.7:
+                filters["date_filter"] = date_result.get("description", message)
+                if "start_date" in date_result and "end_date" in date_result:
+                    filters["date_range"] = {
+                        "start_date": date_result["start_date"],
+                        "end_date": date_result["end_date"]
+                    }
+                # Also include the formats for database queries
+                if "formats" in date_result:
+                    filters["formats"] = date_result["formats"]
+                    
+        except Exception as e:
+            # Fallback to basic parsing if LLM fails
+            import re
+            if "older than" in message:
+                match = re.search(r'older than (\d+)\s*(day|month|year)', message)
+                if match:
+                    number = match.group(1)
+                    unit = match.group(2)
+                    if not unit.endswith('s'):
+                        unit += 's'
+                    filters["date_filter"] = f"older_than_{number}_{unit}"
         
         return filters
 
@@ -1003,7 +1080,7 @@ class ChatService:
     ) -> ChatResponse:
         """Direct confirmation fallback when all parsing fails"""
         try:
-            from cloud_mcp.server import archive_records, delete_archived_records
+            from cloud_mcp.server import execute_confirmed_archive, execute_confirmed_delete
             
             # Use default operations with system safety filters
             if "CONFIRM ARCHIVE" in message_upper:

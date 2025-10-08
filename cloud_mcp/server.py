@@ -4,6 +4,7 @@ Provides database operation tools via the Model Context Protocol
 """
 
 import logging
+import re
 from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import text, func
@@ -349,9 +350,10 @@ async def _get_table_stats(
     table_name: str, 
     filters: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
-    """Get statistics for a table, optionally with date filters"""
+    """Get statistics for a table, optionally with LLM-powered date filters"""
     try:
         from datetime import datetime, timedelta
+        from services.llm_date_filter import llm_date_filter
         
         db_gen = get_db()
         db = next(db_gen)
@@ -380,68 +382,96 @@ async def _get_table_stats(
             query = db.query(model)
             filtered_count = total_count  # Default to total if no filters
             
-            # Apply date filters if provided
+            # Apply LLM-powered date filters if provided
             filter_description = None
+            parsed_date_result = None
+            filter_confidence = 0.0
+            
             if filters and "date_filter" in filters:
-                date_filter = filters["date_filter"]
-                current_date = datetime.now()
+                date_expression = filters["date_filter"]
                 
-                # Parse date filter and calculate cutoff date
-                cutoff_date = None
-                if "older_than_" in date_filter:
-                    # Parse "older_than_X_months", "older_than_X_days", etc.
-                    parts = date_filter.replace("older_than_", "").split("_")
-                    if len(parts) >= 2:
-                        try:
-                            number = int(parts[0])
-                            unit = parts[1]
-                            
-                            if unit.startswith("month"):
-                                cutoff_date = current_date - timedelta(days=number * 30)
-                                filter_description = f"older than {number} months"
-                            elif unit.startswith("day"):
-                                cutoff_date = current_date - timedelta(days=number)
-                                filter_description = f"older than {number} days"
-                            elif unit.startswith("year"):
-                                cutoff_date = current_date - timedelta(days=number * 365)
-                                filter_description = f"older than {number} years"
-                        except ValueError:
-                            pass  # Skip invalid date filter
+                # Determine table type for appropriate formatting
+                table_type = "activities" if "activities" in table_name else "transactions"
                 
-                elif date_filter == "yesterday":
-                    cutoff_date = current_date - timedelta(days=1)
-                    filter_description = "from yesterday"
-                elif date_filter == "recent":
-                    cutoff_date = current_date - timedelta(days=7)
-                    filter_description = "from last 7 days"
+                # Build context for better parsing
+                context = {
+                    "table_type": table_type,
+                    "table_name": table_name,
+                    "total_records": total_count
+                }
                 
-                # Apply the date filter to the query
-                if cutoff_date:
-                    cutoff_string = cutoff_date.strftime("%Y%m%d%H%M%S")
+                # Use LLM-powered date filter parsing
+                parsed_date_result = await llm_date_filter.parse_date_filter(
+                    date_expression, 
+                    context=context
+                )
+                
+                if not parsed_date_result.get("success"):
+                    return {
+                        "success": False,
+                        "error": f"Invalid date filter: {parsed_date_result.get('error', 'Unknown error')}",
+                        "suggestions": [
+                            "Try: 'last 30 days', 'older than 6 months'",
+                            "Try: 'January 2024', 'Q1 2025', 'this year'",
+                            "Try: 'yesterday', 'last week', 'recent data'",
+                            "Try: 'from January to March', 'between 2024-01-01 and 2024-12-31'"
+                        ]
+                    }
+                
+                filter_description = parsed_date_result.get("description", date_expression)
+                filter_confidence = parsed_date_result.get("confidence", 0.0)
+                
+                # Determine the date field for this table
+                date_field_name = None
+                if hasattr(model, 'PostedTime'):
+                    date_field = model.PostedTime
+                    date_field_name = "PostedTime"
+                elif hasattr(model, 'WhenReceived'):
+                    date_field = model.WhenReceived
+                    date_field_name = "WhenReceived"
+                else:
+                    return {
+                        "success": False,
+                        "error": f"Table {table_name} has no recognized date field"
+                    }
+                
+                # Apply the filter using the appropriate format
+                try:
+                    formats = parsed_date_result["formats"]
+                    table_format = formats["activities_transactions"]  # Both use YYYYMMDDHHMMSS format
+                    operation = table_format.get("operation", "between")
                     
-                    # For "recent" filter, we want records NEWER than cutoff (greater than)
-                    # For other filters like "older_than_X", we want records OLDER than cutoff (less than)
-                    if filters and filters.get("date_filter") == "recent":
-                        # Recent records: date field >= cutoff_string
-                        if hasattr(model, 'PostedTime'):
-                            # Activities tables use PostedTime
-                            query = query.filter(model.PostedTime >= cutoff_string)
-                        elif hasattr(model, 'WhenReceived'):
-                            # Transaction tables use WhenReceived
-                            query = query.filter(model.WhenReceived >= cutoff_string)
-                    else:
-                        # Older records: date field < cutoff_string
-                        if hasattr(model, 'PostedTime'):
-                            # Activities tables use PostedTime
-                            query = query.filter(model.PostedTime < cutoff_string)
-                        elif hasattr(model, 'WhenReceived'):
-                            # Transaction tables use WhenReceived
-                            query = query.filter(model.WhenReceived < cutoff_string)
+                    if operation == "between":
+                        if "start_date" in table_format and "end_date" in table_format:
+                            query = query.filter(
+                                date_field >= table_format["start_date"],
+                                date_field <= table_format["end_date"]
+                            )
                     
-                    # Get filtered count after applying the filter - use .count() to include all rows
+                    elif operation == "greater_than":
+                        if "start_date" in table_format:
+                            query = query.filter(date_field >= table_format["start_date"])
+                    
+                    elif operation == "less_than":
+                        if "end_date" in table_format:
+                            query = query.filter(date_field <= table_format["end_date"])
+                    
+                    elif operation == "equals":
+                        if "start_date" in table_format and "end_date" in table_format:
+                            query = query.filter(
+                                date_field >= table_format["start_date"],
+                                date_field <= table_format["end_date"]
+                            )
+                    
+                    # Get filtered count after applying the filter
                     filtered_count = query.count()
                     
-
+                except Exception as filter_error:
+                    logger.error(f"Error applying date filter: {filter_error}")
+                    return {
+                        "success": False,
+                        "error": f"Failed to apply date filter: {str(filter_error)}"
+                    }
             
             # Use filtered count as the main count (this is what the user is asking for)
             count = filtered_count
@@ -470,8 +500,17 @@ async def _get_table_stats(
                     "earliest_date": format_database_date(earliest_date),  # From filtered results
                     "latest_date": format_database_date(latest_date),      # From filtered results
                     "filter_applied": filters.get("date_filter", ""),
-                    "filter_description": filter_description
+                    "filter_description": filter_description,
+                    "filter_confidence": f"{filter_confidence:.1%}",
+                    "parsing_method": "llm_enhanced",
+                    "parsed_filter": parsed_date_result,  # Include full parsed details
+                    "filter_summary": llm_date_filter.get_filter_summary(parsed_date_result)
                 }
+                
+                # Include assumptions if any were made
+                if parsed_date_result.get("assumptions"):
+                    response["assumptions"] = parsed_date_result["assumptions"]
+                    
             else:
                 # No filters - return total count
                 response = {
@@ -480,7 +519,8 @@ async def _get_table_stats(
                     "record_count": total_count,    # Same as total_records when no filter
                     "total_records": total_count,   # Total records in the table
                     "earliest_date": format_database_date(earliest_date),
-                    "latest_date": format_database_date(latest_date)
+                    "latest_date": format_database_date(latest_date),
+                    "parsing_method": "none"
                 }
                 
             return response
@@ -913,66 +953,100 @@ async def _execute_confirmed_archive(
     filters: Dict[str, Any],
     user_id: str
 ) -> Dict[str, Any]:
-    """Execute confirmed archive operation without preview"""
+    """Execute confirmed archive operation without preview - Now uses LLM date filter"""
     try:
         from datetime import datetime, timedelta
+        from services.llm_date_filter import llm_date_filter
         
         # Convert date_filter to date_end for CRUD service compatibility
         processed_filters = filters.copy()
         
         if "date_filter" in processed_filters:
-            date_filter = processed_filters.pop("date_filter")  # Remove date_filter
-            current_date = datetime.now()
+            date_expression = processed_filters.pop("date_filter")  # Remove date_filter
             
-            # Parse date filter and calculate cutoff date
-            cutoff_date = None
-            is_older_than = False
+            # Use LLM date filter to parse the expression
+            context = {
+                "table_type": "activities" if "activities" in table_name else "transactions",
+                "table_name": table_name,
+                "operation": "archive"
+            }
             
-            if "older_than_" in date_filter:
-                # Parse "older_than_X_months", "older_than_X_days", etc.
-                parts = date_filter.replace("older_than_", "").split("_")
-                is_older_than = True  # Set flag for older than operations
-                if len(parts) >= 2:
-                    try:
-                        number = int(parts[0])
-                        unit = parts[1]
-                        
-                        # SAFETY CHECK: Enforce minimum 7-day archive age
-                        if unit.startswith("day") and number < 7:
-                            return {
-                                "success": False,
-                                "error": f"Safety rule violation: Cannot archive records less than 7 days old. Requested: {number} days, minimum required: 7 days"
-                            }
-                        
-                        if unit.startswith("month"):
-                            cutoff_date = current_date - timedelta(days=number * 30)
-                        elif unit.startswith("day"):
-                            cutoff_date = current_date - timedelta(days=number)
-                        elif unit.startswith("year"):
-                            cutoff_date = current_date - timedelta(days=number * 365)
-                    except ValueError:
-                        pass  # Skip invalid date filter
+            parsed_date = await llm_date_filter.parse_date_filter(
+                date_expression,
+                context=context
+            )
             
-            elif date_filter == "yesterday":
-                # SAFETY CHECK: Yesterday is less than 7 days old 
+            if not parsed_date.get("success"):
                 return {
                     "success": False,
-                    "error": "Safety rule violation: Cannot archive records from yesterday. Records must be at least 7 days old before archiving."
-                }
-            elif date_filter == "recent":
-                # SAFETY CHECK: Recent (7 days) doesn't meet minimum age requirement
-                return {
-                    "success": False,  
-                    "error": "Safety rule violation: Cannot archive 'recent' records (last 7 days). Records must be older than 7 days before archiving."
+                    "error": f"Invalid date filter: {parsed_date.get('error', 'Could not parse date expression')}"
                 }
             
-            # Convert cutoff_date to date_end format for CRUD service
-            if cutoff_date:
-                cutoff_string = cutoff_date.strftime("%Y%m%d%H%M%S")
-                processed_filters["date_end"] = cutoff_string
-                # CRITICAL FIX: Set the date_comparison flag for proper < vs <= handling
-                if is_older_than:
+            # Safety checks based on the parsed date
+            operation = parsed_date.get("operation", "between")
+            
+            # For archive operations, we need to ensure records are at least 7 days old
+            current_date = datetime.now()
+            min_archive_date = current_date - timedelta(days=7)
+            
+            if operation == "between":
+                # Check if the end date is too recent (less than 7 days ago)
+                end_date = parsed_date.get("end_date")
+                if end_date and end_date > min_archive_date:
+                    return {
+                        "success": False,
+                        "error": f"Safety rule violation: Cannot archive records newer than 7 days old. "
+                               f"Latest archivable date: {min_archive_date.strftime('%Y-%m-%d')}. "
+                               f"Requested range includes: {end_date.strftime('%Y-%m-%d')}"
+                    }
+            
+            elif operation == "greater_than":
+                # Check if the start date is too recent
+                start_date = parsed_date.get("start_date")
+                if start_date and start_date > min_archive_date:
+                    return {
+                        "success": False,
+                        "error": f"Safety rule violation: Cannot archive records newer than 7 days old. "
+                               f"Latest archivable date: {min_archive_date.strftime('%Y-%m-%d')}. "
+                               f"Requested start date: {start_date.strftime('%Y-%m-%d')}"
+                    }
+            
+            elif operation == "less_than":
+                # This is good for archive - archiving old data
+                end_date = parsed_date.get("end_date")
+                if end_date and end_date > min_archive_date:
+                    return {
+                        "success": False,
+                        "error": f"Safety rule violation: Cannot archive records newer than 7 days old. "
+                               f"Latest archivable date: {min_archive_date.strftime('%Y-%m-%d')}. "
+                               f"Requested cutoff date: {end_date.strftime('%Y-%m-%d')}"
+                    }
+            
+            # Convert to CRUD service format
+            formats = parsed_date.get("formats", {})
+            activities_format = formats.get("activities_transactions", {})
+            
+            if operation == "between":
+                if "start_date" in activities_format and "end_date" in activities_format:
+                    processed_filters["date_start"] = activities_format["start_date"]
+                    processed_filters["date_end"] = activities_format["end_date"]
+                    processed_filters["date_comparison"] = "between"
+            
+            elif operation == "less_than":
+                if "end_date" in activities_format:
+                    processed_filters["date_end"] = activities_format["end_date"]
                     processed_filters["date_comparison"] = "older_than"
+            
+            elif operation == "greater_than":
+                if "start_date" in activities_format:
+                    processed_filters["date_start"] = activities_format["start_date"]
+                    processed_filters["date_comparison"] = "newer_than"
+            
+            elif operation == "equals":
+                if "start_date" in activities_format and "end_date" in activities_format:
+                    processed_filters["date_start"] = activities_format["start_date"]
+                    processed_filters["date_end"] = activities_format["end_date"]
+                    processed_filters["date_comparison"] = "between"
         
         db_gen = get_db()
         db = next(db_gen)
@@ -1028,66 +1102,98 @@ async def _execute_confirmed_delete(
     filters: Dict[str, Any],
     user_id: str
 ) -> Dict[str, Any]:
-    """Execute confirmed delete operation without preview"""
+    """Execute confirmed delete operation without preview - Now uses LLM date filter"""
     try:
         from datetime import datetime, timedelta
+        from services.llm_date_filter import llm_date_filter
         
         # Convert date_filter to date_end for CRUD service compatibility
         processed_filters = filters.copy()
         
         if "date_filter" in processed_filters:
-            date_filter = processed_filters.pop("date_filter")  # Remove date_filter
-            current_date = datetime.now()
+            date_expression = processed_filters.pop("date_filter")  # Remove date_filter
             
-            # Parse date filter and calculate cutoff date
-            cutoff_date = None
-            is_older_than = False
+            # Use LLM date filter to parse the expression
+            context = {
+                "table_type": "activities" if "activities" in table_name else "transactions",
+                "table_name": table_name,
+                "operation": "delete"
+            }
             
-            if "older_than_" in date_filter:
-                # Parse "older_than_X_months", "older_than_X_days", etc.
-                parts = date_filter.replace("older_than_", "").split("_")
-                is_older_than = True  # Set flag for older than operations
-                if len(parts) >= 2:
-                    try:
-                        number = int(parts[0])
-                        unit = parts[1]
-                        
-                        # SAFETY CHECK: Enforce minimum 30-day age for delete operations
-                        if unit.startswith("day") and number < 30:
-                            return {
-                                "success": False,
-                                "error": f"Safety rule violation: Cannot delete archived records less than 30 days old. Requested: {number} days, minimum required: 30 days"
-                            }
-                        
-                        if unit.startswith("month"):
-                            cutoff_date = current_date - timedelta(days=number * 30)
-                        elif unit.startswith("day"):
-                            cutoff_date = current_date - timedelta(days=number)
-                        elif unit.startswith("year"):
-                            cutoff_date = current_date - timedelta(days=number * 365)
-                    except ValueError:
-                        pass  # Skip invalid date filter
+            parsed_date = await llm_date_filter.parse_date_filter(
+                date_expression,
+                context=context
+            )
             
-            elif date_filter == "yesterday":
-                # SAFETY CHECK: Yesterday is much less than 30 days old 
+            if not parsed_date.get("success"):
                 return {
                     "success": False,
-                    "error": "Safety rule violation: Cannot delete records from yesterday. Archived records must be at least 30 days old before deletion."
-                }
-            elif date_filter == "recent":
-                # SAFETY CHECK: Recent (7 days) doesn't meet minimum age requirement
-                return {
-                    "success": False,  
-                    "error": "Safety rule violation: Cannot delete 'recent' archived records (last 7 days). Archived records must be older than 30 days before deletion."
+                    "error": f"Invalid date filter: {parsed_date.get('error', 'Could not parse date expression')}"
                 }
             
-            # Convert cutoff_date to date_end format for CRUD service
-            if cutoff_date:
-                cutoff_string = cutoff_date.strftime("%Y%m%d%H%M%S")
-                processed_filters["date_end"] = cutoff_string
-                # CRITICAL FIX: Set the date_comparison flag for proper < vs <= handling
-                if is_older_than:
+            # Safety checks for delete operations - archived records must be at least 30 days old
+            operation = parsed_date.get("operation", "between")
+            current_date = datetime.now()
+            min_delete_date = current_date - timedelta(days=30)
+            
+            if operation == "between":
+                # Check if the end date is too recent (less than 30 days ago)
+                end_date = parsed_date.get("end_date")
+                if end_date and end_date > min_delete_date:
+                    return {
+                        "success": False,
+                        "error": f"Safety rule violation: Cannot delete archived records newer than 30 days old. "
+                               f"Latest deletable date: {min_delete_date.strftime('%Y-%m-%d')}. "
+                               f"Requested range includes: {end_date.strftime('%Y-%m-%d')}"
+                    }
+            
+            elif operation == "greater_than":
+                # Check if the start date is too recent
+                start_date = parsed_date.get("start_date")
+                if start_date and start_date > min_delete_date:
+                    return {
+                        "success": False,
+                        "error": f"Safety rule violation: Cannot delete archived records newer than 30 days old. "
+                               f"Latest deletable date: {min_delete_date.strftime('%Y-%m-%d')}. "
+                               f"Requested start date: {start_date.strftime('%Y-%m-%d')}"
+                    }
+            
+            elif operation == "less_than":
+                # This is good for delete - deleting old archived data
+                end_date = parsed_date.get("end_date")
+                if end_date and end_date > min_delete_date:
+                    return {
+                        "success": False,
+                        "error": f"Safety rule violation: Cannot delete archived records newer than 30 days old. "
+                               f"Latest deletable date: {min_delete_date.strftime('%Y-%m-%d')}. "
+                               f"Requested cutoff date: {end_date.strftime('%Y-%m-%d')}"
+                    }
+            
+            # Convert to CRUD service format
+            formats = parsed_date.get("formats", {})
+            activities_format = formats.get("activities_transactions", {})
+            
+            if operation == "between":
+                if "start_date" in activities_format and "end_date" in activities_format:
+                    processed_filters["date_start"] = activities_format["start_date"]
+                    processed_filters["date_end"] = activities_format["end_date"]
+                    processed_filters["date_comparison"] = "between"
+            
+            elif operation == "less_than":
+                if "end_date" in activities_format:
+                    processed_filters["date_end"] = activities_format["end_date"]
                     processed_filters["date_comparison"] = "older_than"
+            
+            elif operation == "greater_than":
+                if "start_date" in activities_format:
+                    processed_filters["date_start"] = activities_format["start_date"]
+                    processed_filters["date_comparison"] = "newer_than"
+            
+            elif operation == "equals":
+                if "start_date" in activities_format and "end_date" in activities_format:
+                    processed_filters["date_start"] = activities_format["start_date"]
+                    processed_filters["date_end"] = activities_format["end_date"]
+                    processed_filters["date_comparison"] = "between"
         
         db_gen = get_db()
         db = next(db_gen)
@@ -1267,6 +1373,12 @@ async def _execute_sql_query(
             generated_sql = re.sub(r'^```sql\s*', '', generated_sql, flags=re.MULTILINE | re.IGNORECASE)
             generated_sql = re.sub(r'^```\s*', '', generated_sql, flags=re.MULTILINE)
             generated_sql = re.sub(r'\s*```$', '', generated_sql, flags=re.MULTILINE)
+            
+            # Remove any stray semicolons that might be in the middle of the query
+            # Split by semicolon and take only the first part (the main query)
+            if ';' in generated_sql:
+                generated_sql = generated_sql.split(';')[0]
+            
             generated_sql = generated_sql.strip()
             
             if not generated_sql:
@@ -1284,17 +1396,24 @@ async def _execute_sql_query(
                 "generated_sql": None
             }
         
-        # Validate SQL query for security
+        # Validate SQL query for security - IMPROVED VALIDATION
         sql_upper = generated_sql.upper().strip()
         
-        # Check for forbidden operations
-        forbidden_keywords = [
-            'INSERT', 'UPDATE', 'DELETE', 'DROP', 'ALTER', 'TRUNCATE', 'CREATE',
-            'EXEC', 'EXECUTE', 'SP_', 'XP_', 'MERGE', 'BULK', 'OPENROWSET'
+        # Remove quoted strings to avoid false positives (e.g., WHERE job_type = 'delete')
+        sql_no_strings = re.sub(r"'[^']*'", "", sql_upper)  # Remove single-quoted strings
+        sql_no_strings = re.sub(r'"[^"]*"', "", sql_no_strings)  # Remove double-quoted strings
+        
+        # Check for forbidden operations as actual SQL commands (not in string values)
+        forbidden_patterns = [
+            r'\bINSERT\s+INTO\b', r'\bUPDATE\s+\w+\s+SET\b', r'\bDELETE\s+FROM\b',
+            r'\bDROP\s+\w+\b', r'\bALTER\s+\w+\b', r'\bTRUNCATE\s+\w+\b', 
+            r'\bCREATE\s+\w+\b', r'\bEXEC\b', r'\bEXECUTE\b', r'\bSP_\w+\b', 
+            r'\bXP_\w+\b', r'\bMERGE\b', r'\bBULK\b', r'\bOPENROWSET\b'
         ]
         
-        for keyword in forbidden_keywords:
-            if keyword in sql_upper:
+        for pattern in forbidden_patterns:
+            if re.search(pattern, sql_no_strings):
+                keyword = pattern.replace(r'\b', '').replace(r'\s+\w+', '').replace(r'\s+', ' ')
                 return {
                     "success": False,
                     "error": f"Security violation: {keyword} operations are not allowed. Only SELECT queries are permitted.",
@@ -1309,9 +1428,12 @@ async def _execute_sql_query(
                 "generated_sql": generated_sql
             }
         
+        # Clean up any trailing semicolons that might cause syntax errors
+        generated_sql = generated_sql.rstrip(';').strip()
+        
         # Add LIMIT if not present for safety
         if 'LIMIT' not in sql_upper and 'TOP' not in sql_upper:
-            generated_sql += " LIMIT 100"
+            generated_sql = generated_sql.rstrip(';') + " LIMIT 100"
         
         # Execute the SQL query
         db_gen = get_db()
