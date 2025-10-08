@@ -1432,6 +1432,7 @@ async def _execute_sql_query(
         generated_sql = generated_sql.rstrip(';').strip()
         
         # Add LIMIT if not present for safety
+        
         if 'LIMIT' not in sql_upper and 'TOP' not in sql_upper:
             generated_sql = generated_sql.rstrip(';') + " LIMIT 100"
         

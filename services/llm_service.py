@@ -269,42 +269,50 @@ class OpenAIService:
             - dsitransactionlogarchive: Archived transaction logs (old records)
 
             Available MCP Tools:
+            1. get_table_stats - For counting records and table statistics with date filters
+            2. archive_records - For archiving old records (7+ days old) from main tables to archive tables
+            3. delete_archived_records - For deleting old archived records (30+ days old) from archive tables
             4. health_check - For system health/status checks
             5. region_status - For region connection status and current region info
-            8. execute_sql_query - For custom SQL queries using natural language (when no other tools match)
+            6. execute_sql_query - For custom SQL queries using natural language (includes ALL job queries and complex conditions)
 
             CRITICAL ANALYSIS RULES:
 
-            1. JOB QUERIES (ALL JOB-RELATED QUERIES USE SQL TOOL):
-            - ALL job-related queries → execute_sql_query (job logs are NOT simple counting, they need flexible SQL queries)
-            - "how many job logs", "count job logs", "job logs count", "total job logs" → execute_sql_query
-            - "how many jobs", "count jobs", "jobs count", "total jobs" → execute_sql_query  
-            - "show jobs", "list jobs", "job logs", "recent jobs", "failed jobs" → execute_sql_query
+            1. STATISTICS/COUNTING QUERIES (USE get_table_stats):
+            - "count activities", "activities count", "total activities" → get_table_stats
+            - "count transactions", "transactions count", "total transactions" → get_table_stats  
+            - "activities older than X days/months" → get_table_stats with date_filter
+            - "transactions older than X days/months" → get_table_stats with date_filter
+            - "count of archived activities", "archived activities count" → get_table_stats
+            - "count of archived transactions", "archived transactions count" → get_table_stats
+            - "table statistics", "database statistics", "show table stats" → get_table_stats
+            - Simple counting queries with basic date filters → get_table_stats
+
+            2. JOB QUERIES (USE execute_sql_query):
+            - "show jobs", "list jobs", "recent jobs", "latest jobs" → execute_sql_query
+            - "failed jobs", "successful jobs", "job status" → execute_sql_query
+            - "job statistics", "job summary", "job stats" → execute_sql_query
+            - "archive jobs", "delete jobs" (about job execution logs, not data) → execute_sql_query
+            - "jobs from last week", "jobs today", "recent job executions" → execute_sql_query
+            - ALL job-related queries should use execute_sql_query for maximum flexibility
+            - Job queries target the job_logs table via SQL generation
             - ANALYSIS/REASONING queries about jobs → execute_sql_query (e.g., "analyse job fail", "why jobs fail", "job failure reasons")
-            - Job queries need complex filtering by job_type, status, date ranges → execute_sql_query
 
-            2. SIMPLE DATA QUERIES (COUNTING/STATS WITH DATE FILTERS):
-            - EXACT phrases: "count activities", "activities count", "total activities" → get_table_stats dsiactivities
-            - EXACT phrases: "count transactions", "transactions count", "total transactions" → get_table_stats dsitransactionlog
-            - ARCHIVED TABLE COUNTING: "count of archived activities", "archived activities count", "count archived activities" → get_table_stats dsiactivitiesarchive
-            - ARCHIVED TABLE COUNTING: "count of archived transactions", "archived transactions count", "count archived transactions" → get_table_stats dsitransactionlogarchive
-            - FLEXIBLE COUNTING: "count of activities", "count of transactions" → get_table_stats with appropriate table
-            - EXACT phrases: "table statistics", "database statistics", "show table stats" → get_table_stats
-            - DATE FILTERED COUNTING: "activities older than X days/months/years" → get_table_stats dsiactivities with date_filter
-            - DATE FILTERED COUNTING: "transactions older than X days/months/years" → get_table_stats dsitransactionlog with date_filter
-            - DATE FILTERED COUNTING: "activities from yesterday/last week/last month" → get_table_stats dsiactivities with date_filter
-            - DATE FILTERED COUNTING: "transactions from yesterday/last week/last month" → get_table_stats dsitransactionlog with date_filter
-            - Simple counting with basic date filters → get_table_stats
-            - Complex queries with multiple conditions, JOIN operations, or analysis → execute_sql_query
+            3. ARCHIVE OPERATIONS (USE archive_records):
+            - "archive activities", "archive old activities", "archive activities older than X" → archive_records
+            - "archive transactions", "archive old transactions", "archive transactions older than X" → archive_records
+            - Must be clear operational intent for moving data to archive tables
 
-            3. OPERATIONS (EXACT ACTION PHRASES ONLY):
-            - Must be clear operational intent, not just containing "archive" or "delete"
+            4. DELETE OPERATIONS (USE delete_archived_records):
+            - "delete archived activities", "delete old archived activities" → delete_archived_records
+            - "delete archived transactions", "delete old archived transactions" → delete_archived_records
+            - Must be clear operational intent for permanently removing archived data
 
-            4. REGION QUERIES:
+            5. REGION QUERIES (USE region_status):
             - EXACT phrases: "region status", "current region", "which region", "region info" → region_status
             - Must be specifically about region/connection status
 
-            5. CUSTOM SQL QUERIES (COMPLEX CONDITIONS ONLY):
+            6. CUSTOM SQL QUERIES (USE execute_sql_query - COMPLEX CONDITIONS ONLY):
             - Complex WHERE conditions with multiple criteria → execute_sql_query
             - Queries with specific field matching (e.g., ActivityType = 'Event') → execute_sql_query
             - JOIN operations or multi-table queries → execute_sql_query
@@ -342,22 +350,20 @@ class OpenAIService:
 
             RESPONSE FORMAT EXAMPLES:
             "count activities" → MCP_TOOL: get_table_stats dsiactivities {{}}
+            "activities older than 10 days" → MCP_TOOL: get_table_stats dsiactivities {{"date_filter": "older than 10 days"}}
+            "count transactions older than 3 months" → MCP_TOOL: get_table_stats dsitransactionlog {{"date_filter": "older than 3 months"}}
             "count of archived activities" → MCP_TOOL: get_table_stats dsiactivitiesarchive {{}}
-            "archived activities count" → MCP_TOOL: get_table_stats dsiactivitiesarchive {{}}
-            "count of archived transactions" → MCP_TOOL: get_table_stats dsitransactionlogarchive {{}}
-            "count transactions" → MCP_TOOL: get_table_stats dsitransactionlog {{}}
-            "how many job logs are there" → MCP_TOOL: execute_sql_query {{"user_prompt": "how many job logs are there"}}
-            "count job logs" → MCP_TOOL: execute_sql_query {{"user_prompt": "count job logs"}}
-            "job logs count" → MCP_TOOL: execute_sql_query {{"user_prompt": "job logs count"}}
+            "table statistics" → MCP_TOOL: get_table_stats {{}}
+            "archive activities older than 7 days" → MCP_TOOL: archive_records dsiactivities {{"date_filter": "older than 7 days"}}
+            "delete archived transactions older than 30 days" → MCP_TOOL: delete_archived_records dsitransactionlog {{"date_filter": "older than 30 days"}}
             "show jobs" → MCP_TOOL: execute_sql_query {{"user_prompt": "show jobs"}}
+            "recent jobs" → MCP_TOOL: execute_sql_query {{"user_prompt": "recent jobs"}}
             "failed jobs" → MCP_TOOL: execute_sql_query {{"user_prompt": "failed jobs"}}
+            "job statistics" → MCP_TOOL: execute_sql_query {{"user_prompt": "job statistics"}}
             "analyse the reason for recent job fail" → MCP_TOOL: execute_sql_query {{"user_prompt": "analyse the reason for recent job fail"}}
             "why did jobs fail" → MCP_TOOL: execute_sql_query {{"user_prompt": "why did jobs fail"}}
-            "job failure analysis" → MCP_TOOL: execute_sql_query {{"user_prompt": "job failure analysis"}}
             "activities by server" → MCP_TOOL: execute_sql_query {{"user_prompt": "activities by server"}}
             "show activities where ActivityType is Event" → MCP_TOOL: execute_sql_query {{"user_prompt": "show activities where ActivityType is Event"}}
-            "find transactions by specific user" → MCP_TOOL: execute_sql_query {{"user_prompt": "find transactions by specific user"}}
-           
             "region status" → MCP_TOOL: region_status {{}}
             "hello" → None
             "show data" (no context) → CLARIFY_TABLE_NEEDED
@@ -485,10 +491,11 @@ class OpenAIService:
                             f"I encountered an invalid operation '{tool_name}'. "
                             "I can help you with the following operations:\n\n"
                             "💡 **Available Operations:**\n"
-                            "• **View Data:** \"Show table statistics\" or \"Count activities\"\n"
-                            "• **Archive Data:** \"Archive old records\" or \"Archive activities older than 7 days\"\n"
-                            "• **Delete Data:** \"Delete archived records\" (with proper date filters)\n"
-                            "• **System Info:** \"Health check\" or \"Database status\"\n\n"
+                            "• **Count/Statistics:** \"Count activities\", \"Activities older than 10 days\", \"Table statistics\"\n"
+                            "• **Archive Data:** \"Archive activities older than 7 days\", \"Archive old transactions\"\n"
+                            "• **Delete Data:** \"Delete archived activities older than 30 days\" (permanent removal)\n"
+                            "• **System Info:** \"Health check\", \"Region status\", \"Database status\"\n"
+                            "• **Custom Queries:** Complex WHERE conditions, analysis queries\n\n"
                         )
                         self.is_database_operation = False
                         self.tool_used = None
@@ -754,11 +761,29 @@ class OpenAIService:
             'total count of activities', 'total count of transactions'
         ]
         
+        # Date-filtered counting patterns - NEW! (This is the key missing pattern)
+        date_filtered_patterns = [
+            'activities older than', 'transactions older than',
+            'activities from', 'transactions from',
+            'recent activities', 'recent transactions',
+            'activities in', 'transactions in',
+            'activities between', 'transactions between',
+            'activities last', 'transactions last',
+            'activities this', 'transactions this'
+        ]
+        
         # Check for main table patterns
         for pattern in main_table_patterns:
             if pattern in message_lower:
                 # Make sure it doesn't have complex WHERE conditions
                 if not any(condition in message_lower for condition in ['where', 'like', 'containing', 'specific', 'particular']):
+                    return True
+        
+        # Check for date-filtered patterns - CRITICAL for "activities older than 10 days"
+        for pattern in date_filtered_patterns:
+            if pattern in message_lower:
+                # Make sure it's not asking for complex analysis or specific field matching
+                if not any(condition in message_lower for condition in ['where', 'like', 'containing', 'specific', 'particular', 'analyse', 'analyze', 'why', 'reason']):
                     return True
         
         # Check for archived table patterns - NEW!
