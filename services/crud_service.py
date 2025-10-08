@@ -11,6 +11,7 @@ from models import (
 )
 from services.auth_service import AuthService
 from schemas import ParsedOperation
+from utils.json_serializer import prepare_filters_for_storage
 
 logger = logging.getLogger(__name__)
 
@@ -95,11 +96,11 @@ class CRUDService:
                     date_range_start=operation.filters.get("date_start"),
                     date_range_end=operation.filters.get("date_end"),
                     status="in_progress",
-                    operation_details={
+                    operation_details=prepare_filters_for_storage({
                         "reason": reason,
                         "filters": operation.filters,
                         "confidence": operation.confidence
-                    }
+                    })
                 )
                 self.db.add(audit_entry)
                 self.db.flush()
@@ -207,11 +208,11 @@ class CRUDService:
                     date_range_start=operation.filters.get("date_start"),
                     date_range_end=operation.filters.get("date_end"),
                     status="in_progress",
-                    operation_details={
+                    operation_details=prepare_filters_for_storage({
                         "reason": reason,
                         "filters": operation.filters,
                         "confidence": operation.confidence
-                    }
+                    })
                 )
                 self.db.add(audit_entry)
                 self.db.flush()

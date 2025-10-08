@@ -11,6 +11,7 @@ from .auth_service import AuthService
 from schemas import ParsedOperation
 from .crud_service import CRUDService
 from .region_service import get_region_service
+from utils.json_serializer import prepare_filters_for_storage
 
 logger = logging.getLogger(__name__)
 
@@ -173,9 +174,9 @@ class ChatService:
                             filters = getattr(llm_result, 'filters', None)
                             # Ensure filters is properly serializable as JSON
                             if filters is not None and isinstance(filters, dict):
-                                chat_log.filters_applied = filters
+                                chat_log.filters_applied = prepare_filters_for_storage(filters)
                             else:
-                                chat_log.filters_applied = {} if filters is None else filters
+                                chat_log.filters_applied = prepare_filters_for_storage({} if filters is None else filters)
                             db.commit()
                         
                         # Format the response
@@ -747,7 +748,7 @@ class ChatService:
                             chat_log.bot_response = response
                             chat_log.operation_status = "archive_completed"
                             chat_log.records_affected = archived_count
-                            chat_log.filters_applied = getattr(llm_result, 'filters', None)
+                            chat_log.filters_applied = prepare_filters_for_storage(getattr(llm_result, 'filters', None))
                             db.commit()
                             
                             return ChatResponse(
@@ -769,7 +770,7 @@ class ChatService:
                             
                             chat_log.bot_response = response
                             chat_log.operation_status = "archive_failed"
-                            chat_log.filters_applied = getattr(llm_result, 'filters', None)
+                            chat_log.filters_applied = prepare_filters_for_storage(getattr(llm_result, 'filters', None))
                             db.commit()
                             
                             return ChatResponse(
@@ -805,7 +806,7 @@ class ChatService:
                             chat_log.bot_response = response
                             chat_log.operation_status = "delete_completed"
                             chat_log.records_affected = deleted_count
-                            chat_log.filters_applied = getattr(llm_result, 'filters', None)
+                            chat_log.filters_applied = prepare_filters_for_storage(getattr(llm_result, 'filters', None))
                             db.commit()
                             
                             return ChatResponse(
@@ -827,7 +828,7 @@ class ChatService:
                             
                             chat_log.bot_response = response
                             chat_log.operation_status = "delete_failed"
-                            chat_log.filters_applied = getattr(llm_result, 'filters', None)
+                            chat_log.filters_applied = prepare_filters_for_storage(getattr(llm_result, 'filters', None))
                             db.commit()
                             
                             return ChatResponse(
