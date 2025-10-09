@@ -28,7 +28,7 @@ try:
         logger.warning(f"Missing tables detected: {missing_tables}")
         # Only create missing tables
         Base.metadata.create_all(bind=engine, checkfirst=True)
-        logger.info("🔧 Created missing tables")
+        logger.info("Created missing tables")
         
         # Verify creation was successful
         updated_tables = inspector.get_table_names()

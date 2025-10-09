@@ -257,7 +257,7 @@ class OpenAIService:
             """
             
             enhanced_prompt = f"""
-            You are an expert database operations assistant. Analyze user requests using natural language understanding and conversational context.
+            You are an expert database operations agent. Analyze user requests using natural language understanding and conversational context.
 
             User Request: "{user_message}"
             {context_section}
@@ -286,7 +286,9 @@ class OpenAIService:
             - "count of archived activities", "archived activities count" → get_table_stats
             - "count of archived transactions", "archived transactions count" → get_table_stats
             - "table statistics", "database statistics", "show table stats" → get_table_stats
-            - Simple counting queries with basic date filters → get_table_stats
+            - Simple counting queries with ONLY date filters (no other filters) → get_table_stats
+            
+            IMPORTANT: If the query has ANY filters other than date filters (like ActivityType, ServerName, specific field values, WHERE conditions), use execute_sql_query instead!
 
             2. JOB QUERIES (USE execute_sql_query):
             - "show jobs", "list jobs", "recent jobs", "latest jobs" → execute_sql_query
@@ -312,7 +314,17 @@ class OpenAIService:
             - EXACT phrases: "region status", "current region", "which region", "region info" → region_status
             - Must be specifically about region/connection status
 
-            6. CUSTOM SQL QUERIES (USE execute_sql_query - COMPLEX CONDITIONS ONLY):
+            6. CUSTOM SQL QUERIES (USE execute_sql_query - FOR NON-DATE FILTERS & COMPLEX CONDITIONS):
+            - ANY count/list queries with non-date filters → execute_sql_query
+            - Queries with status/condition keywords: "errors", "failed", "successful", "warnings", "exceptions", "timeout" → execute_sql_query
+            - "count all errors in transactions" → execute_sql_query
+            - "show failed activities" → execute_sql_query
+            - "count successful transactions" → execute_sql_query
+            - "list all warnings" → execute_sql_query
+            - "count activities where ActivityType = 'Event'" → execute_sql_query
+            - "list activities by server" → execute_sql_query
+            - "count transactions with specific criteria" → execute_sql_query
+            - "activities where ServerName contains 'prod'" → execute_sql_query
             - Complex WHERE conditions with multiple criteria → execute_sql_query
             - Queries with specific field matching (e.g., ActivityType = 'Event') → execute_sql_query
             - JOIN operations or multi-table queries → execute_sql_query
@@ -320,7 +332,7 @@ class OpenAIService:
             - "show activities where ActivityType is Event", "find records with...", "activities by server" → execute_sql_query
             - "list transactions where...", "get data with specific criteria", "filter by multiple conditions" → execute_sql_query
             - "analyse job fail", "why jobs fail", "job failure reasons" → execute_sql_query
-            - Queries not matching simple counting/stats patterns above → execute_sql_query
+            - Any queries with filters beyond simple date filtering → execute_sql_query
 
             CONTEXT HANDLING (CRITICAL):
             - PRESERVE context from previous queries for follow-up requests
@@ -354,6 +366,19 @@ class OpenAIService:
             "count transactions older than 3 months" → MCP_TOOL: get_table_stats dsitransactionlog {{"date_filter": "older than 3 months"}}
             "count of archived activities" → MCP_TOOL: get_table_stats dsiactivitiesarchive {{}}
             "table statistics" → MCP_TOOL: get_table_stats {{}}
+            
+            NON-DATE FILTER EXAMPLES (use execute_sql_query):
+            "count all errors occured in transactions in sept" → MCP_TOOL: execute_sql_query {{"user_prompt": "count all errors occured in transactions in sept"}}
+            "show failed activities" → MCP_TOOL: execute_sql_query {{"user_prompt": "show failed activities"}}
+            "count successful transactions" → MCP_TOOL: execute_sql_query {{"user_prompt": "count successful transactions"}}
+            "list all warnings" → MCP_TOOL: execute_sql_query {{"user_prompt": "list all warnings"}}
+            "count activities where ActivityType is Event" → MCP_TOOL: execute_sql_query {{"user_prompt": "count activities where ActivityType is Event"}}
+            "list activities by server" → MCP_TOOL: execute_sql_query {{"user_prompt": "list activities by server"}}
+            "count transactions with error" → MCP_TOOL: execute_sql_query {{"user_prompt": "count transactions with error"}}
+            "activities where ServerName contains prod" → MCP_TOOL: execute_sql_query {{"user_prompt": "activities where ServerName contains prod"}}
+            "count activities older than 10 days where ActivityType is Event" → MCP_TOOL: execute_sql_query {{"user_prompt": "count activities older than 10 days where ActivityType is Event"}}
+            
+            OTHER EXAMPLES:
             "archive activities older than 7 days" → MCP_TOOL: archive_records dsiactivities {{"date_filter": "older than 7 days"}}
             "delete archived transactions older than 30 days" → MCP_TOOL: delete_archived_records dsitransactionlog {{"date_filter": "older than 30 days"}}
             "show jobs" → MCP_TOOL: execute_sql_query {{"user_prompt": "show jobs"}}
@@ -490,12 +515,12 @@ class OpenAIService:
                         self.clarification_message = (
                             f"I encountered an invalid operation '{tool_name}'. "
                             "I can help you with the following operations:\n\n"
-                            "💡 **Available Operations:**\n"
-                            "• **Count/Statistics:** \"Count activities\", \"Activities older than 10 days\", \"Table statistics\"\n"
-                            "• **Archive Data:** \"Archive activities older than 7 days\", \"Archive old transactions\"\n"
-                            "• **Delete Data:** \"Delete archived activities older than 30 days\" (permanent removal)\n"
-                            "• **System Info:** \"Health check\", \"Region status\", \"Database status\"\n"
-                            "• **Custom Queries:** Complex WHERE conditions, analysis queries\n\n"
+                            "Available Operations:\n"
+                            "• Count/Statistics: \"Count activities\", \"Activities older than 10 days\", \"Table statistics\"\n"
+                            "• Archive Data: \"Archive activities older than 7 days\", \"Archive old transactions\"\n"
+                            "• Delete Data: \"Delete archived activities older than 30 days\" (permanent removal)\n"
+                            "• System Info: \"Health check\", \"Region status\", \"Database status\"\n"
+                            "• Custom Queries: Complex WHERE conditions, analysis queries\n\n"
                         )
                         self.is_database_operation = False
                         self.tool_used = None
@@ -549,7 +574,7 @@ class OpenAIService:
                         self.clarification_message = (
                             f"I had trouble understanding the filter criteria. "
                             "Please provide clearer date or filter information:\n\n"
-                            "📅 **Date Filter Examples:**\n"
+                            "📅 Date Filter Examples:\n"
                             "• \"records older than 10 months\"\n"
                             "• \"data from last year\"\n"
                             "• \"recent activities\"\n\n"
@@ -772,18 +797,22 @@ class OpenAIService:
             'activities this', 'transactions this'
         ]
         
+        # Check for non-date filters that should use SQL tool instead
+        # Use the same logic as _has_non_date_filters method
+        if self._has_non_date_filters(message):
+            return False
+        
         # Check for main table patterns
         for pattern in main_table_patterns:
             if pattern in message_lower:
-                # Make sure it doesn't have complex WHERE conditions
-                if not any(condition in message_lower for condition in ['where', 'like', 'containing', 'specific', 'particular']):
-                    return True
+                # Already checked for non-date filters above, so this is safe for stats tool
+                return True
         
         # Check for date-filtered patterns - CRITICAL for "activities older than 10 days"
         for pattern in date_filtered_patterns:
             if pattern in message_lower:
-                # Make sure it's not asking for complex analysis or specific field matching
-                if not any(condition in message_lower for condition in ['where', 'like', 'containing', 'specific', 'particular', 'analyse', 'analyze', 'why', 'reason']):
+                # Make sure it's not asking for complex analysis or reasoning
+                if not any(condition in message_lower for condition in ['analyse', 'analyze', 'why', 'reason']):
                     return True
         
         # Check for archived table patterns - NEW!
@@ -810,6 +839,68 @@ class OpenAIService:
             return True
         
         return False
+
+    def _has_non_date_filters(self, message: str) -> bool:
+        """Check if message contains filters other than date filters"""
+        message_lower = message.lower().strip()
+        
+        # Phrase-based filters (exact substring matches)
+        phrase_filters = [
+            'where', 'like', 'containing', 'specific', 'particular', 'activitytype', 
+            'servername', 'by server', 'with error', 'status', 'type', 'contains',
+            'equals', 'is event', 'is error', 'name like', 'server like',
+            'activity type', 'transaction type', 'error type', 'where activitytype',
+            'where servername', 'where status', 'where type'
+        ]
+        
+        # Standalone keywords that indicate field-specific filtering
+        keyword_filters = [
+            'error', 'errors', 'failed', 'success', 'successful', 'warning', 'warnings',
+            'exception', 'exceptions', 'timeout', 'timeouts', 'cancelled', 'canceled',
+            'completed', 'pending', 'running', 'stopped', 'paused', 'retry', 'retries'
+        ]
+        
+        # Check for phrase-based filters
+        if any(filter_term in message_lower for filter_term in phrase_filters):
+            return True
+            
+        # Check for standalone keyword filters (but avoid false positives with common words)
+        # Only trigger if the keyword appears in a filtering context
+        for keyword in keyword_filters:
+            if keyword in message_lower:
+                # Make sure it's not just part of a table name or casual mention
+                # Look for filtering context words nearby
+                context_words = ['count', 'show', 'list', 'find', 'get', 'all', 'only', 'with']
+                if any(context in message_lower for context in context_words):
+                    return True
+        
+        return False
+
+    def _extract_primary_table_from_sql(self, sql: str) -> str:
+        """Extract the primary table name from a SQL query"""
+        try:
+            sql_lower = sql.lower()
+            
+            # Look for FROM clause
+            if ' from ' in sql_lower:
+                from_index = sql_lower.find(' from ')
+                remaining = sql_lower[from_index + 6:].strip()
+                
+                # Extract table name (first word after FROM)
+                table_name = remaining.split()[0] if remaining.split() else ""
+                
+                # Clean table name (remove quotes, brackets, etc.)
+                table_name = table_name.strip('"\'`[]')
+                
+                # Return valid table names only
+                valid_tables = ["dsiactivities", "dsitransactionlog", "dsiactivitiesarchive", "dsitransactionlogarchive", "job_logs"]
+                if table_name in valid_tables:
+                    return table_name
+            
+            return ""
+        except Exception as e:
+            logger.warning(f"Error extracting table from SQL: {e}")
+            return ""
 
     async def _create_fallback_archive_operation(self, user_message: str, conversation_context: str = None) -> Any:
         """Create fallback archive operation with separate table and filter context handling"""
@@ -855,6 +946,38 @@ class OpenAIService:
     async def _create_fallback_stats_operation(self, user_message: str, conversation_context: str = None) -> Any:
         """Create fallback stats operation with separate table and filter context handling"""
         try:
+            # Check if message has non-date filters - if so, use SQL tool instead
+            if self._has_non_date_filters(user_message):
+                from cloud_mcp.server import _execute_sql_query
+                
+                # Route to SQL tool for queries with non-date filters
+                filters = {"user_prompt": user_message}
+                mcp_result = await _execute_sql_query(user_message, filters)
+                
+                # Extract table name from SQL query if available
+                table_name = ""
+                if mcp_result and mcp_result.get('generated_sql'):
+                    table_name = self._extract_primary_table_from_sql(mcp_result['generated_sql'])
+                
+                # Create result object
+                class EnhancedLLMResult:
+                    def __init__(self, tool, table, filters, mcp_result, context_preserved=False):
+                        self.tool_used = tool
+                        self.table_used = table
+                        self.filters = filters
+                        self.mcp_result = mcp_result
+                        self.is_database_operation = True
+                        self.operation = None
+                        self.context_preserved = context_preserved
+                        self.context_info = {
+                            "table": table,
+                            "filters": filters,
+                            "operation": tool
+                        }
+                
+                return EnhancedLLMResult("execute_sql_query", table_name, filters, mcp_result, False)
+            
+            # Otherwise, use regular stats operation for date-only or no filters
             from cloud_mcp.server import get_table_stats
             
             # Extract context information
@@ -1052,7 +1175,7 @@ class OpenAIService:
        current_date = datetime.now().strftime("%Y-%m-%d")
        current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
        
-       return f"""You are an AI assistant for Cloud Inventory Log Management System.
+       return f"""You are an AI agent for Cloud Inventory Log Management System.
 
             CURRENT DATE: {current_date}
             CURRENT DATE & TIME: {current_datetime}
@@ -1073,39 +1196,39 @@ class OpenAIService:
 
             - HANDLING DIFFERENT TYPES OF USER INPUTS:
 
-            **1. GREETINGS & CASUAL CONVERSATION:**
+            1. GREETINGS & CASUAL CONVERSATION:
             • For "hello", "hi", "how are you", etc. - Respond warmly and introduce your capabilities
-            • Example: "Hello! I'm your Cloud Inventory Log Management assistant. I can help you view database statistics, guide archiving operations, and explain safety procedures."
+            • Example: "Hello! I'm your Cloud Inventory Log Management agent. I can help you view database statistics, guide archiving operations, and explain safety procedures."
 
-            **2. GENERAL QUESTIONS ABOUT THE SYSTEM:**
+            2. GENERAL QUESTIONS ABOUT THE SYSTEM:
             • For questions about policies, procedures, or how things work - Provide informative explanations
             • Example: "What is archiving?" → Explain the archiving process, safety rules, and benefits
             • Example: "What can you do?" → List your capabilities with examples
 
-            **3. OUT-OF-CONTEXT REQUESTS:**
+            3. OUT-OF-CONTEXT REQUESTS:
             • For requests completely unrelated to log management (weather, cooking, etc.) - Politely redirect to your domain
             • Example: "I'm specialized in Cloud Inventory Log Management. I can help you with database operations, archiving procedures, and system statistics. What would you like to know about your log data?"
 
-            **4. DESTRUCTIVE/DANGEROUS REQUESTS:**
+            4. DESTRUCTIVE/DANGEROUS REQUESTS:
             • For destructive operations outside your mandate (delete database, drop table, truncate, etc.) - Firmly decline with security explanation
             • Example: "Delete Database" → "I cannot and will not perform destructive database operations like deleting entire databases or dropping tables. I'm designed with safety-first principles and only support controlled archiving operations with built-in safeguards. I can help you with safe data management within established policies."
             • Example: "Drop table" → "I don't have permissions to drop tables or perform destructive schema operations. My role is limited to safe data viewing and controlled archiving with multiple safety checks. Would you like to see table statistics or learn about our archiving procedures instead?"
             • Emphasize safety controls and redirect to approved operations
 
-            **5. VAGUE DATABASE REQUESTS:**
+            5. VAGUE DATABASE REQUESTS:
             • For unclear data requests like "show data", "check something" - Ask specific clarifying questions
             • Provide examples of what you can do rather than generic error messages
             • Example: "I'd be happy to help! Could you specify what data you'd like to see? For example: 'Show activities statistics' or 'Count transactions older than 30 days'"
 
-            **6. TECHNICAL QUESTIONS:**
+            6. TECHNICAL QUESTIONS:
             • For questions about database structure, table relationships, etc. - Provide detailed technical explanations
             • Include table names, purposes, and relationships
 
-            **7. SPECIFIC DATABASE OPERATIONS:**
+            7. SPECIFIC DATABASE OPERATIONS:
             • For clear requests about tables, archiving, statistics - Process normally and provide structured responses
             • Available tables: dsiactivities, dsitransactionlog, dsiactivitiesarchive, dsitransactionlogarchive
 
-            **8. ERROR HANDLING GUIDELINES:**
+            8. ERROR HANDLING GUIDELINES:
             • Don't always default to the same clarification message
             • Tailor your response to the type of confusion or vagueness
             • If table names are unclear → Ask specifically about which table
@@ -1123,7 +1246,7 @@ class OpenAIService:
             • When asked about the current date, always refer to: {current_date}
 
             - EXAMPLES OF APPROPRIATE RESPONSES:
-            User: "Hello" → "Hello! I'm your Cloud Inventory Log Management assistant. I can help you view database statistics, check region connections, manage archiving operations, and explain safety procedures. What would you like to know about your log data?"
+            User: "Hello" → "Hello! I'm your Cloud Inventory Log Management agent. I can help you view database statistics, check region connections, manage archiving operations, and explain safety procedures. What would you like to know about your log data?"
             User: "What's the weather?" → "I'm specialized in Cloud Inventory Log Management and can't help with weather information. However, I can help you with database operations, viewing statistics, archiving procedures, and system health checks. What would you like to know about your log data?"
             User: "Delete Database" → "I cannot and will not perform destructive database operations like deleting entire databases. I'm designed with safety-first principles and only support controlled archiving operations with built-in safeguards. My role is limited to safe data viewing and controlled archiving with multiple safety checks. Would you like to see table statistics or learn about our archiving procedures instead?"
             User: "Drop table activities" → "I don't have permissions to drop tables or perform destructive schema operations. Table dropping is a dangerous operation that could cause data loss and is outside my mandate. I can help you with safe operations like viewing table statistics, archiving old records, or explaining our data retention policies. What would you like to know about the activities table?"
@@ -1247,19 +1370,16 @@ class OpenAIService:
         # Greeting patterns
         if any(greeting in user_msg_lower for greeting in ['hello', 'hi', 'hey', 'good morning', 'good afternoon']):
             return {
-                "response": f"Hello! I'm your Cloud Inventory Log Management assistant{error_msg}. "
+                "response": f"Hello! I'm your Cloud Inventory Log Management agent{error_msg}. "
                            "I'm here to help you manage your database operations safely and efficiently.\n\n"
-                           "💡 **What I can help with:**\n"
+                           "What I can help with:\n"
                            "• View database statistics and record counts\n"
                            "• Guide archiving and data management operations\n"
                            "• Explain safety policies and procedures\n"
                            "• Monitor system health and performance\n\n"
                            "What would you like to know about your log data?",
                 "suggestions": [
-                    "Show table statistics",
-                    "Which region is connected?",
-                    "What can you do?", 
-                    "Explain archiving policy"
+                    "Show table statistics"
                 ],
                 "source": "fallback"
             }
@@ -1269,21 +1389,18 @@ class OpenAIService:
             return {
                 "response": f"I'm having trouble with my full response system right now{error_msg}, but I can still help! "
                            "I'm specialized in Cloud Inventory Log Management with these capabilities:\n\n"
-                           "🔍 **Data Operations:**\n"
+                           "Data Operations:\n"
                            "• View table statistics and record counts\n"
                            "• Query specific data ranges and filters\n\n"
-                           "📦 **Archive Management:**\n"
+                           "Archive Management:\n"
                            "• Guide safe archiving procedures (7+ day old records)\n"
                            "• Manage archive table operations\n\n"
-                           "🛡️ **Safety & Compliance:**\n"
+                           "Safety & Compliance:\n"
                            "• Enforce data retention policies\n"
                            "• Provide operation confirmations and logging\n\n"
                            "Try asking me about specific tables or operations!",
                 "suggestions": [
-                    "Show activities statistics",
-                    "Which region is connected?",
-                    "Explain safety rules",
-                    "What is archiving?"
+                    "Show table statistics"
                 ],
                 "source": "fallback"
             }
@@ -1299,9 +1416,7 @@ class OpenAIService:
                            "• dsiactivitiesarchive - Archived activity logs\n"
                            "• dsitransactionlogarchive - Archived transaction logs\n\n",
                 "suggestions": [
-                    "Show activities statistics",
-                    "Which region is connected?",
-                    "Database health check"
+                    "Show table statistics"
                 ],
                 "source": "fallback"
             }
@@ -1312,17 +1427,14 @@ class OpenAIService:
                 "response": f"I'm having some technical issues right now{error_msg}. "
                            "I'm specialized in Cloud Inventory Log Management and can't help with topics outside that domain. "
                            "However, I'd be happy to help you with:\n\n"
-                           "🎯 **My Specialties:**\n"
+                           "My Specialties:\n"
                            "• Database operations and statistics\n"
                            "• Log data archiving and management\n"
                            "• System safety and compliance procedures\n"
                            "• Data retention policy guidance\n\n"
                            "What would you like to know about your log management system?",
                 "suggestions": [
-                    "What can you do?",
-                    "Which region is connected?",
-                    "Show table statistics",
-                    "System health check"
+                    "Show table statistics"
                 ],
                 "source": "fallback"
             }
@@ -1331,18 +1443,15 @@ class OpenAIService:
         else:
             return {
                 "response": f"I'm experiencing some technical difficulties processing your request{error_msg}. "
-                           "I'm your Cloud Inventory Log Management assistant and I'm here to help with database operations.\n\n"
-                           "💡 **How I can help:**\n"
+                           "I'm your Cloud Inventory Log Management agent and I'm here to help with database operations.\n\n"
+                           "How I can help:\n"
                            "• View table statistics and record counts\n"
                            "• Guide you through archiving procedures\n"  
                            "• Explain safety rules and best practices\n"
                            "• Monitor system health and performance\n\n"
-                           "Could you try rephrasing your request or choose from the suggestions below?",
+                           "Could you try rephrasing your request",
                 "suggestions": [
-                    "Show table statistics",
-                    "Which region is connected?", 
-                    "What can you do?",
-                    "System health check"
+                    "Show table statistics"
                 ],
                 "source": "fallback"
             }

@@ -416,27 +416,6 @@ class ChatService:
         # Check for exact confirmation commands first
         if any(pattern in message_upper for pattern in explicit_confirmations):
             return True
-        
-        # Check for exact EXECUTE matches (not EXECUTED)
-        if message_upper == 'EXECUTE' or message_upper.startswith('EXECUTE '):
-            return True
-        
-        # Only match standalone confirmation words at start/end or as complete message
-        standalone_confirmations = ['YES', 'NO', 'PROCEED', 'SURE', 'GO AHEAD', 'DONT']
-        
-        # Check if message is exactly one of these confirmation words
-        if message_upper in standalone_confirmations:
-            return True
-            
-        # Check if message starts or ends with these confirmation words followed/preceded by punctuation
-        for pattern in standalone_confirmations:
-            if (message_upper.startswith(pattern + ' ') or 
-                message_upper.startswith(pattern + ',') or 
-                message_upper.startswith(pattern + '.') or
-                message_upper.endswith(' ' + pattern) or 
-                message_upper.endswith(',' + pattern) or 
-                message_upper.endswith('.' + pattern)):
-                return True
                 
         return False
 
@@ -629,7 +608,7 @@ class ChatService:
                         "No changes have been made to the database"
                     ]
                 else:
-                    response = "Operation Cancelled\n\nThe operation has been cancelled and will not proceed.\nNo changes have been made to the database."
+                    response = "Operation Cancelled\n\nThe operation has been cancelled.\nNo changes have been made to the database."
                     details = ["No changes have been made to the database"]
                 
                 structured_content = {
@@ -638,7 +617,7 @@ class ChatService:
                     "icon": "",
                     "region": region.upper(),
                     "table": table_name,  # Add table name for frontend display
-                    "message": "The operation has been cancelled and will not proceed.",
+                    "message": "The operation has been cancelled.",
                     "details": details,
                     "context": {
                         "response_type": "cancelled",
@@ -789,7 +768,7 @@ class ChatService:
                             response += f"Successfully deleted {deleted_count:,} records\n"
                             response += f"From: {table_name}\n"
                             response += f"Executed by: {user_id}\n\n"
-                            response += "Records have been permanently removed from the archive table."
+                            response += "Records permanently removed from the archive table."
                             
                             structured_content = {
                                 "type": "success_card",
@@ -1168,7 +1147,7 @@ class ChatService:
                             conversation.append(f"[Job Context: Previous job logs operation]")
                             
                 if log.bot_response:
-                    conversation.append(f"Assistant: {log.bot_response}")
+                    conversation.append(f"agent: {log.bot_response}")
             
             # Limit total context length to avoid token limits
             context = "\n".join(conversation[-10:])  # Last 10 messages (5 exchanges)
@@ -1284,16 +1263,16 @@ class ChatService:
         if has_filter:
             # Show filtered count as primary when filters are applied
             if is_activity_transaction_archive:
-                response += f"Records: **{filtered_count:,}**\n"
+                response += f"Records: {filtered_count:,}\n"
             else:
-                response += f"Records: **{filtered_count:,}**\n"
+                response += f"Records: {filtered_count:,}\n"
             response += f"Filter: Records {filter_description}\n"
         else:
             # Show total count when no filters are applied
             if is_activity_transaction_archive:
-                response += f"Total Records: **{filtered_count:,}**\n"
+                response += f"Total Records: {filtered_count:,}\n"
             else:
-                response += f"Total Records: **{filtered_count:,}**\n"
+                response += f"Total Records: {filtered_count:,}\n"
 
         # Structured content for rich rendering
         structured_content = {
@@ -1334,7 +1313,7 @@ class ChatService:
         """Format query results response with structured content"""
         if not mcp_result.get("success"):
             error_msg = mcp_result.get("error", "Unknown error")
-            error_message = f"Query Error - {region.upper()} Region\n\n{error_msg}"
+            error_message = f"Unable to assist - {region.upper()} Region\n\n{error_msg}"
             return ChatResponse(
                 response=error_message,
                 response_type="error",
@@ -1347,10 +1326,10 @@ class ChatService:
         # Plain text response for backward compatibility
         response = f"Table Statistics"
         response += f"Table: {table_name}\n"
-        response += f"**Total Records Found: {total_found:,}**\n\n"
+        response += f"Total Records Found: {total_found:,}\n\n"
 
         if total_found > 0:
-            response += f"Found **{total_found:,}** records\n"
+            response += f"Found {total_found:,} records\n"
         else:
             response += "No matching records found.\n"
         
@@ -1405,20 +1384,20 @@ class ChatService:
             if table["error"]:
                 response += f"• {table['name']}: Error - {table['error']}\n"
             else:
-                response += f"• {table['name']}: **{table['total_records']:,}** total records"
+                response += f"• {table['name']}: {table['total_records']:,} total records"
                 if table['age_based_count'] > 0:
-                    response += f", **{table['age_based_count']:,}** records older than {table['age_days']} days\n"
+                    response += f", {table['age_based_count']:,} records older than {table['age_days']} days\n"
                 else:
                     response += "\n"
         
-        response += "\n📦 Archive Tables:\n"
+        response += "\nArchive Tables:\n"
         for table in archive_tables:
             if table["error"]:
                 response += f"• {table['name']}: Error - {table['error']}\n"
             else:
-                response += f"• {table['name']}: **{table['total_records']:,}** total records"
+                response += f"• {table['name']}: {table['total_records']:,} total records"
                 if table['age_based_count'] > 0:
-                    response += f", **{table['age_based_count']:,}** records older than {table['age_days']} days\n"
+                    response += f", {table['age_based_count']:,} records older than {table['age_days']} days\n"
                 else:
                     response += "\n"
         
@@ -1451,7 +1430,7 @@ class ChatService:
         # Check if this is a preview (confirmation needed)
         if mcp_result.get('requires_confirmation', False):
             response = f"Archive Preview - {region.upper()} Region\n\n"
-            response += f"Ready to Archive: **{count:,} records** \n"
+            response += f"Ready to Archive: {count:,} records \n"
             response += f"From Table: {table_name}\n"
             response += f"To Table: {self._get_archive_table_name(table_name)}\n\n"
             response += f"This will move records from main table to archive table.\n"
@@ -1558,13 +1537,13 @@ class ChatService:
         # Check if this is a preview (confirmation needed)
         if mcp_result.get('requires_confirmation', False):
             response = f"Delete Preview - {region.upper()} Region\n\n"
-            response += f"Ready to Delete: **{count:,} records**\n"
+            response += f"Ready to Delete: {count:,} records\n"
             response += f"From Table: {table_name}\n\n"
             response += "WARNING: THIS WILL PERMANENTLY DELETE RECORDS\n"
             
             # Add safety information about default filters if no specific date filters were provided
             if not mcp_result.get('filters', {}).get('date_filter'):
-                response += "🛡️ Safety Filter Applied: Only archived records older than 30 days will be deleted.\n"
+                response += "Safety Filter Applied: Only archived records older than 30 days will be deleted.\n"
             
             response += "\nType 'CONFIRM DELETE' to proceed or 'CANCEL' to abort."
             
@@ -1659,14 +1638,14 @@ class ChatService:
         """Format health check response"""
         if mcp_result.get("success"):
             response = f"System Health Check - {region.upper()} Region\n\n"
-            response += "All database connections and services are operational."
+            response += "Database connections and services are operational."
             
             structured_content = {
                 "type": "success_card",
                 "title": "System Health Check",
                 "region": region.upper(),
                 "details": [
-                    "All database connections are operational",
+                    "Database connections are operational",
                     "Services are running normally",
                     "System is ready for operations"
                 ]
@@ -1735,23 +1714,23 @@ class ChatService:
             response = f"Region Status Information\n\n"
             
             if connected_count == 0:
-                response += f"There are **{total_regions} regions** available ({', '.join([r.upper() for r in available_regions])}), of which currently **none is connected**.\n\n"
+                response += f"There are {total_regions} regions available ({', '.join([r.upper() for r in available_regions])}), of which currently none is connected.\n\n"
             elif connected_count == 1:
                 connected_region = connected_regions[0]
-                response += f"There are **{total_regions} regions** available ({', '.join([r.upper() for r in available_regions])}), of which currently **{connected_region.upper()}** is connected.\n\n"
+                response += f"There are {total_regions} regions available ({', '.join([r.upper() for r in available_regions])}), of which currently {connected_region.upper()} is connected.\n\n"
             else:
                 connected_list = ', '.join([r.upper() for r in connected_regions])
-                response += f"There are **{total_regions} regions** available ({', '.join([r.upper() for r in available_regions])}), of which currently **{connected_list}** are connected.\n\n"
+                response += f"There are {total_regions} regions available ({', '.join([r.upper() for r in available_regions])}), of which currently {connected_list} are connected.\n\n"
             
             if current_region:
                 is_connected = connection_status.get(current_region, False)
                 connection_text = "Connected" if is_connected else "Disconnected"
-                response += f"**Active Region:** {current_region.upper()} ({connection_text})\n"
+                response += f"Active Region: {current_region.upper()} ({connection_text})\n"
             else:
-                response += f"**Active Region:** None (using default: {default_region.upper()})\n"
+                response += f"Active Region: None (using default: {default_region.upper()})\n"
             
             if default_region and default_region != current_region:
-                response += f"**Default Region:** {default_region.upper()}"
+                response += f"Default Region: {default_region.upper()}"
         
         # Create unified structured content for all region responses using LLM-generated content
         structured_content = {
@@ -1904,21 +1883,21 @@ class ChatService:
     async def _format_sql_query_response(self, mcp_result: dict, region: str, session_id: str = None) -> ChatResponse:
         """Format SQL query execution response using LLM for intelligent analysis"""
         if not mcp_result.get("success"):
-            error_msg = mcp_result.get("error", "SQL query execution failed")
+            error_msg = mcp_result.get("error", "Unable to assist with your request")
             generated_sql = mcp_result.get("generated_sql")
             user_prompt = mcp_result.get("user_prompt", "")
             
             # User-friendly error response
-            response = f"❌ **Query Error** - {region.upper()} Region\n\n"
-            response += f"**Your Request:** {user_prompt}\n\n"
-            response += f"**Issue:** {error_msg}\n\n"
+            response = f"Unable to assist - {region.upper()} Region\n\n"
+            response += f"Your Request: {user_prompt}\n\n"
+            response += f"Issue: {error_msg}\n\n"
             
             if "Security violation" in error_msg:
-                response += "💡 **Tip:** I can only run safe SELECT queries to view data. Try asking to 'show' or 'find' information instead.\n\n"
+                response += "Tip: I can only run safe SELECT queries to view data. Try asking to 'show' or 'find' information instead.\n\n"
             elif "execution failed" in error_msg.lower():
-                response += "💡 **Tip:** Try rephrasing your request with simpler terms or check if the data exists.\n\n"
+                response += "Tip: Try rephrasing your request with simpler terms or check if the data exists.\n\n"
             
-            response += "**What I can help with:**\n"
+            response += "What I can help with:\n"
             response += "• Show data from activities, transactions, or job logs\n"
             response += "• Filter by specific criteria (dates, names, types)\n"
             response += "• Count and group data by different fields\n"
@@ -1926,17 +1905,12 @@ class ChatService:
             
             structured_content = {
                 "type": "error_card", 
-                "title": "Query Error",
+                "title": "Unable to assist",
                 "region": region.upper(),
                 "error_message": error_msg,
                 "generated_sql": generated_sql,
                 "user_friendly_error": True,
-                "suggestions": [
-                    "Try rephrasing your query",
-                    "Use simpler query terms", 
-                    "Ask to 'show' or 'find' data instead",
-                    "Check if the data exists"
-                ],
+                "suggestions": [],
                 "context": {
                     "response_type": "sql_error",
                     "timestamp": datetime.now().isoformat()
@@ -2136,7 +2110,7 @@ class ChatService:
             
             # Create comprehensive prompt for LLM
             analysis_prompt = f"""
-            You are an intelligent database assistant analyzing query results for a cloud inventory management system.
+            You are an intelligent database agent analyzing query results for a cloud inventory management system.
 
             User's Original Request: {user_prompt}
 
@@ -2232,43 +2206,43 @@ class ChatService:
         """Create fallback response when LLM is unavailable"""
         query_type = self._determine_query_type(user_prompt, generated_sql)
         
-        response = f"✅ **Query Results** - {region.upper()} Region\n\n"
-        response += f"**Your Request:** {user_prompt}\n\n"
+        response = f"Query Results - {region.upper()} Region\n\n"
+        response += f"Your Request: {user_prompt}\n\n"
         
         if row_count > 0:
             # Add summary based on query type
             if "count" in user_prompt.lower() or "COUNT(" in generated_sql.upper():
-                response += f"📊 **Summary:** Found **{row_count:,}** result(s)\n\n"
+                response += f"Summary: Found {row_count:,} result(s)\n\n"
             elif "job" in user_prompt.lower():
-                response += f"🔧 **Job Results:** Found **{row_count:,}** job record(s)\n\n"
+                response += f"Job Results: Found {row_count:,} job record(s)\n\n"
             elif "activit" in user_prompt.lower():
-                response += f"📋 **Activity Results:** Found **{row_count:,}** activity record(s)\n\n"
+                response += f"Activity Results: Found {row_count:,} activity record(s)\n\n"
             elif "transaction" in user_prompt.lower():
-                response += f"💼 **Transaction Results:** Found **{row_count:,}** transaction record(s)\n\n"
+                response += f"Transaction Results: Found {row_count:,} transaction record(s)\n\n"
             else:
-                response += f"📄 **Data Results:** Found **{row_count:,}** record(s)\n\n"
+                response += f"Data Results: Found {row_count:,} record(s)\n\n"
             
             # Add sample data preview
             if len(data) > 0:
-                response += f"**Sample Data Preview:**\n"
+                response += f"Sample Data Preview:\n"
                 sample_record = data[0]
                 preview_count = min(3, len(columns))
                 for i, col in enumerate(columns[:preview_count]):
                     value = sample_record.get(col, "N/A")
                     if isinstance(value, str) and len(value) > 50:
                         value = value[:47] + "..."
-                    response += f"• **{col}:** {value}\n"
+                    response += f"• {col}: {value}\n"
                 
                 if len(columns) > preview_count:
                     response += f"• ... and {len(columns) - preview_count} more field(s)\n"
                 response += f"\n"
             
-            response += f"📋 **View complete results in the data table below.**\n"
+            response += f"View complete results in the data table below.\n"
             
             if row_count >= 100:
-                response += f"\n⚠️ **Note:** Results limited to 100 rows for performance."
+                response += f"\nNote: Results limited to 100 rows for performance."
         else:
-            response += f"🔍 **No Results Found**\n\n"
+            response += f"No Results Found\n\n"
             response += f"The query didn't return any matching records. Try broadening your search criteria or checking if the data exists."
         
         return response
@@ -2293,11 +2267,11 @@ class ChatService:
         # Create role-specific welcome message
         if user_role == "Admin":
             title = f"Welcome {user_id}"
-            content = f"Hello {user_id}! I'm your Cloud Inventory assistant. As a Admin, you have access to all operations including archiving and deletion."
+            content = f"Hello {user_id}! I'm your Cloud Inventory agent. As a Admin, you have access to all operations including archiving and deletion."
             suggestions = []
         else:
             title = f"Welcome {user_id}"
-            content = f"Hello {user_id}! I'm your Cloud Inventory assistant. As a User, you have read-only access for viewing data."
+            content = f"Hello {user_id}! I'm your Cloud Inventory agent. As a User, you have read-only access for viewing data."
             suggestions = []
         
         # Create welcome card structured content
@@ -2329,7 +2303,7 @@ class ChatService:
         """Create structured content for conversational responses"""
         return {
             "type": "conversational_card",
-            "title": "AI Assistant Response",
+            "title": "AI Agent Response",
             "icon": "",
             "region": region.upper(),
             "user_role": user_role,

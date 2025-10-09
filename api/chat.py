@@ -95,6 +95,7 @@ async def confirm_operation(
         from schemas import ParsedOperation
         
         user_info = current_user
+        structured_content = None
         
         # Get regional database session
         region_db_session = region_service.get_session(confirmation.region)
@@ -122,11 +123,27 @@ async def confirm_operation(
             )
             
             if result["success"]:
-                response_text = f"Archive Completed in {confirmation.region.upper()}\n\n{result['records_archived']:,} records successfully archived from {confirmation.table} to {_get_archive_table_name(confirmation.table)}."
-                response_type = "operation_success"
+                archived_count = result['records_archived']
+                response_text = f"Archive Completed in {confirmation.region.upper()}\n\n{archived_count:,} records successfully archived from {confirmation.table} to {_get_archive_table_name(confirmation.table)}."
+                response_type = "archive_completed"
+                
+                # Create structured content for success card
+                structured_content = {
+                    "type": "success_card",
+                    "title": "Archive Completed",
+                    "region": confirmation.region.upper(),
+                    "details": [
+                        f"Successfully archived {archived_count:,} records",
+                        f"From: {confirmation.table}",
+                        f"To: {_get_archive_table_name(confirmation.table)}",
+                        f"Executed by: {user_info['username']}",
+                        "Records have been moved from main table to archive table."
+                    ]
+                }
             else:
                 response_text = f"Archive failed: {result.get('error', 'Unknown error')}"
                 response_type = "error"
+                structured_content = None
                 
         elif confirmation.operation == "DELETE" and confirmation.confirmed:
             result = await crud_service.execute_delete_operation(
@@ -138,19 +155,48 @@ async def confirm_operation(
             )
             
             if result["success"]:
-                response_text = f"Delete Completed in {confirmation.region.upper()}\n\n{result['records_deleted']:,} records permanently deleted from {_get_archive_table_name(confirmation.table)}."
-                response_type = "operation_success"
+                deleted_count = result['records_deleted']
+                response_text = f"Delete Completed in {confirmation.region.upper()}\n\n{deleted_count:,} records permanently deleted from {_get_archive_table_name(confirmation.table)}."
+                response_type = "delete_completed"
+                
+                # Create structured content for success card
+                structured_content = {
+                    "type": "success_card",
+                    "title": "Delete Completed",
+                    "region": confirmation.region.upper(),
+                    "details": [
+                        f"Successfully deleted {deleted_count:,} records",
+                        f"From: {_get_archive_table_name(confirmation.table)}",
+                        f"Executed by: {user_info['username']}",
+                        "Records permanently removed from the archive table."
+                    ]
+                }
             else:
                 response_text = f"Delete failed: {result.get('error', 'Unknown error')}"
                 response_type = "error"
+                structured_content = None
         
         elif not confirmation.confirmed:
             response_text = f"Operation Cancelled\n\n{confirmation.operation} operation for {confirmation.table} in {confirmation.region.upper()} was cancelled by user."
-            response_type = "operation_cancelled"
+            response_type = "cancelled"
+            
+            # Create structured content for cancelled card
+            structured_content = {
+                "type": "cancelled_card",
+                "title": f"{confirmation.operation.title()} Cancelled",
+                "region": confirmation.region.upper(),
+                "table": confirmation.table,
+                "message": f"The {confirmation.operation.lower()} operation has been cancelled.",
+                "details": [
+                    f"Cancelled: {confirmation.operation} for {confirmation.table}",
+                    "No changes have been made to the database"
+                ]
+            }
         
         else:
             response_text = f"Unsupported Operation\n\nOperation '{confirmation.operation}' is not supported for confirmation."
             response_type = "error"
+            structured_content = None
         
         # Cleanup session
         try:
@@ -161,6 +207,7 @@ async def confirm_operation(
         return ChatResponse(
             response=response_text,
             response_type=response_type,
+            structured_content=structured_content,
             context={
                 "operation": confirmation.operation,
                 "table": confirmation.table,
