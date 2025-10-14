@@ -180,7 +180,7 @@ class ChatService:
                             db.commit()
                         
                         # Format the response
-                        formatted_response = await self._format_response_by_tool(llm_result, region, final_session_id)
+                        formatted_response = await self._format_response_by_tool(llm_result, region, final_session_id, user_info)
                         
                         # CRITICAL : Update ChatOpsLog with the formatted bot response so confirmation can find preview operations
                         if chat_log and formatted_response:
@@ -326,7 +326,7 @@ class ChatService:
                 structured_content=error_structured_content
             )
 
-    async def _format_response_by_tool(self, llm_result, region: str, session_id: str = None) -> ChatResponse:
+    async def _format_response_by_tool(self, llm_result, region: str, session_id: str = None, user_info: dict = None) -> ChatResponse:
         """Format response based on the MCP tool used by LLM"""
         try:
             mcp_result = llm_result.mcp_result
@@ -356,10 +356,10 @@ class ChatService:
                 return self._format_stats_response(mcp_result, table_used, region)
                 
             elif tool_used == "archive_records":
-                return self._format_archive_response(mcp_result, table_used, region, session_id)
+                return self._format_archive_response(mcp_result, table_used, region, session_id, user_info)
                 
             elif tool_used == "delete_archived_records":
-                return self._format_delete_response(mcp_result, table_used, region, session_id)
+                return self._format_delete_response(mcp_result, table_used, region, session_id, user_info)
                 
             elif tool_used == "health_check":
                 return self._format_health_response(mcp_result, region)
@@ -1423,8 +1423,32 @@ class ChatService:
             context={"region": region, "tool": "general_stats", "table_count": len(detailed_stats)}
         )
 
-    def _format_archive_response(self, mcp_result: dict, table_name: str, region: str, session_id: str = None) -> ChatResponse:
+    def _format_archive_response(self, mcp_result: dict, table_name: str, region: str, session_id: str = None, user_info: dict = None) -> ChatResponse:
         """Format archive operation response with confirmation if needed"""
+        
+        # Check user permissions for Monitor role - no confirmation card should be shown
+        if user_info and user_info.get("role") == "Monitor":
+            error_message = "Access Denied\n\nArchive operations require Admin privileges. Monitor users can only view data."
+            structured_content = {
+                "type": "access_denied_card",
+                "title": "Access Denied",
+                "region": region.upper(),
+                "user_role": user_info.get("role"),
+                "description": "You do not have permission to perform archive operations. \n\nThis action is restricted to Admin users only.",
+                "context": {
+                    "response_type": "access_denied",
+                    "operation": "ARCHIVE",
+                    "user_role": user_info.get("role"),
+                    "timestamp": datetime.now().isoformat()
+                }
+            }
+            return ChatResponse(
+                response=error_message,
+                response_type="error", 
+                structured_content=structured_content,
+                context={"permission_denied": True, "operation": "ARCHIVE", "user_role": user_info.get("role")}
+            )
+        
         count = mcp_result.get('archived_count', 0)
         
         # Check if this is a preview (confirmation needed)
@@ -1530,8 +1554,32 @@ class ChatService:
             context={"count": count, "tool": "archive_records", "table": table_name}
         )
 
-    def _format_delete_response(self, mcp_result: dict, table_name: str, region: str, session_id: str = None) -> ChatResponse:
+    def _format_delete_response(self, mcp_result: dict, table_name: str, region: str, session_id: str = None, user_info: dict = None) -> ChatResponse:
         """Format delete operation response with confirmation if needed"""
+        
+        # Check user permissions for Monitor role - no confirmation card should be shown
+        if user_info and user_info.get("role") == "Monitor":
+            error_message = "Access Denied\n\nDelete operations require Admin privileges. Monitor users can only view data."
+            structured_content = {
+                "type": "access_denied_card",
+                "title": "Access Denied",
+                "region": region.upper(),
+                "user_role": user_info.get("role"),
+                "description": "You do not have permission to perform delete operations. \n\nThis action is restricted to Admin users only.",
+                "context": {
+                    "response_type": "access_denied",
+                    "operation": "DELETE",
+                    "user_role": user_info.get("role"),
+                    "timestamp": datetime.now().isoformat()
+                }
+            }
+            return ChatResponse(
+                response=error_message,
+                response_type="error",
+                structured_content=structured_content,
+                context={"permission_denied": True, "operation": "DELETE", "user_role": user_info.get("role")}
+            )
+        
         count = mcp_result.get('deleted_count', 0)
         
         # Check if this is a preview (confirmation needed)
