@@ -123,7 +123,6 @@ Respond with JSON only, no explanations.
                 # Validate and enhance the filter
                 enhanced_filter = await self._enhance_filter(parsed_filter, user_input)
                 
-                logger.info(f"Successfully parsed date filter: {user_input} -> {enhanced_filter['description']}")
                 return enhanced_filter
                 
             except json.JSONDecodeError as e:
